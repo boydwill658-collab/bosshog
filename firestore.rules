@@ -54,13 +54,60 @@ service cloud.firestore {
     }
 
     match /orders/{orderId} {
-      allow get: if isOwner(existing().customerId) || isAdmin();
-      allow list: if isOwner(resource.data.customerId) || isAdmin();
+      allow get: if isOwner(existing().customerId) || (isSignedIn() && existing().driverId == request.auth.uid) || isAdmin();
+      allow list: if isOwner(resource.data.customerId) || (isSignedIn() && resource.data.driverId == request.auth.uid) || isAdmin() || (
+        isSignedIn() && resource.data.status in ['confirmed', 'preparing', 'out-for-delivery']
+      );
       allow create: if isSignedIn() && isOwner(incoming().customerId) && isValidOrder(incoming());
       allow update: if (isOwner(existing().customerId) && incoming().status == 'cancelled' && 
                         existing().status == 'pending' && 
                         incoming().diff(existing()).affectedKeys().hasOnly(['status'])) ||
+                    (isSignedIn() && (existing().driverId == request.auth.uid || existing().driverId == null) && 
+                     incoming().diff(existing()).affectedKeys().hasAll(['status', 'driverId'])) ||
                     isAdmin();
+    }
+
+    // Community Rules
+    match /pledges/{pledgeId} {
+      allow read: if true;
+      allow create: if true;
+      allow update, delete: if isAdmin();
+    }
+
+    match /band_giveaway/{entryId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // Nominations Rules
+    function isValidNomination(data) {
+      return data.nominatorId == request.auth.uid &&
+             data.nomineeName is string && data.nomineeName.size() <= 100 &&
+             data.reason is string && data.reason.size() <= 2000 &&
+             data.votes is list &&
+             data.status in ['nominated', 'selected', 'completed'] &&
+             data.createdAt is string;
+    }
+
+    match /nominations/{nominationId} {
+      allow read: if true;
+      allow create: if isSignedIn() && isValidNomination(incoming()) && 
+                      incoming().votes.size() == 1 && 
+                      incoming().votes[0] == request.auth.uid;
+      allow update: if (isSignedIn() && 
+                        incoming().diff(existing()).affectedKeys().hasOnly(['votes']) &&
+                        incoming().votes.size() > existing().votes.size() &&
+                        request.auth.uid in incoming().votes) || 
+                    isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /moments/{momentId} {
+      allow read: if true;
+      allow create: if isSignedIn() && isValidId(momentId) && 
+                      incoming().userId == request.auth.uid &&
+                      incoming().image.size() <= 1048576; // 1MB limit for base64
+      allow delete: if isOwner(existing().userId) || isAdmin();
     }
 
     // Driver Application Rules
@@ -76,7 +123,12 @@ service cloud.firestore {
     match /drivers/{userId} {
       allow get: if isOwner(userId) || isAdmin();
       allow create: if isOwner(userId) && isValidDriverApp(incoming());
-      allow update: if isAdmin();
+      allow update: if (isOwner(userId) && existing().status == 'pending' && isValidDriverApp(incoming())) || isAdmin();
+    }
+
+    // Admin List
+    match /admins/{adminId} {
+      allow read: if isAdmin();
     }
 
     // Chat Rules

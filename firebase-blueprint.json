@@ -85,6 +85,62 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["senderId", "text", "createdAt"]
+    },
+    "BusinessPledge": {
+      "title": "Business Pledge",
+      "description": "Community impact pledges from local businesses",
+      "type": "object",
+      "properties": {
+        "businessName": { "type": "string" },
+        "pledgeType": { "type": "string", "enum": ["money", "materials", "labor"] },
+        "details": { "type": "string" },
+        "verified": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["businessName", "pledgeType", "details", "verified", "createdAt"]
+    },
+    "BandGiveaway": {
+      "title": "Band Giveaway Entry",
+      "description": "Entries for the band trailer giveaway",
+      "type": "object",
+      "properties": {
+        "bandName": { "type": "string" },
+        "genre": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["bandName", "genre", "createdAt"]
+    },
+    "CommunityMoment": {
+      "title": "Community Moment",
+      "description": "User-shared photos of favorite places or concerts",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userPhoto": { "type": "string" },
+        "image": { "type": "string", "description": "Base64 or URL of the photo" },
+        "caption": { "type": "string" },
+        "location": { "type": "string" },
+        "type": { "type": "string", "enum": ["place", "concert"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "userName", "image", "caption", "type", "createdAt"]
+    },
+    "NeighborNomination": {
+      "title": "Neighbor Nomination",
+      "description": "Nomination for a $1000 home cleanup service",
+      "type": "object",
+      "properties": {
+        "nominatorId": { "type": "string" },
+        "nominatorName": { "type": "string" },
+        "nomineeName": { "type": "string" },
+        "nomineeAddress": { "type": "string" },
+        "reason": { "type": "string" },
+        "votes": { "type": "array", "description": "List of user IDs who voted" },
+        "status": { "type": "string", "enum": ["nominated", "selected", "completed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["nominatorId", "nomineeName", "reason", "votes", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -107,6 +163,22 @@
     "chats": {
       "schema": "ChatMessage",
       "description": "Messages for an order chat: /chats/{orderId}/messages/{messageId}"
+    },
+    "pledges": {
+      "schema": "BusinessPledge",
+      "description": "Collection of business impact pledges"
+    },
+    "band_giveaway": {
+      "schema": "BandGiveaway",
+      "description": "Collection of band giveaway entries"
+    },
+    "moments": {
+      "schema": "CommunityMoment",
+      "description": "Collection of shared community moments"
+    },
+    "nominations": {
+      "schema": "NeighborNomination",
+      "description": "Collection of community service nominations"
     }
   }
 }

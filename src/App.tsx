@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, FormEvent } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { ShoppingCart, MapPin, Star, Zap, ChevronRight, Package, X, Menu, LogIn, Search, User as UserIcon, Save, CheckCircle2, AlertCircle, Truck, Clock, ShieldCheck, Ticket, ExternalLink, Navigation, Send, MessageSquare, Bird, Flame, Car, Bike } from 'lucide-react';
+import { ShoppingCart, MapPin, Star, Zap, ChevronRight, Package, X, Menu, LogIn, Search, User as UserIcon, Save, CheckCircle2, AlertCircle, Truck, Clock, ShieldCheck, Ticket, ExternalLink, Navigation, Send, MessageSquare, Bird, Flame, Car, Bike, DollarSign, BarChart3, List, Check, Camera, Image as ImageIcon, Heart } from 'lucide-react';
 import { auth, db } from './lib/firebase';
 import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, where, arrayUnion } from 'firebase/firestore';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 
@@ -80,7 +80,7 @@ const RatingStars = ({ rating, size = 16 }: { rating: number; size?: number }) =
   );
 };
 
-const MerchantCard = ({ merchant, idx }: { merchant: Merchant; idx: number }) => {
+const MerchantCard: React.FC<{ merchant: Merchant; idx: number }> = ({ merchant, idx }) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -155,7 +155,7 @@ const Logo = () => (
   </div>
 );
 
-const Navbar = ({ user, toggleCart }: { user: any; toggleCart: () => void }) => {
+const Navbar = ({ user, profile, toggleCart }: { user: any; profile: UserProfile | null; toggleCart: () => void }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   const handleLogin = async () => {
@@ -189,6 +189,15 @@ const Navbar = ({ user, toggleCart }: { user: any; toggleCart: () => void }) => 
           <div className="flex items-center gap-4">
             {user ? (
               <div className="flex items-center gap-4">
+                {profile?.role === 'driver' && (
+                  <Link 
+                    to="/driver/dashboard" 
+                    className="flex items-center gap-2 px-4 py-2 bg-emerald-500 text-white rounded-xl text-xs font-bold hover:bg-emerald-600 transition-all shadow-sm"
+                  >
+                    <BarChart3 size={16} />
+                    Driver Hub
+                  </Link>
+                )}
                 <button 
                   onClick={toggleCart}
                   className="p-2 text-gray-600 hover:text-emerald-500 transition-colors relative"
@@ -217,6 +226,10 @@ const Navbar = ({ user, toggleCart }: { user: any; toggleCart: () => void }) => 
         </div>
 
         {/* Mobile Nav Toggle */}
+        <div className="hidden md:flex gap-6 mr-8">
+          <Link to="/community" className="text-sm font-bold text-gray-500 hover:text-emerald-600 transition-colors uppercase tracking-widest">Community Hub</Link>
+          <Link to="/community" className="text-sm font-bold text-gray-500 hover:text-emerald-600 transition-colors uppercase tracking-widest">Band Giveaway</Link>
+        </div>
         <button className="md:hidden p-2" onClick={() => setIsMenuOpen(!isMenuOpen)}>
           {isMenuOpen ? <X /> : <Menu />}
         </button>
@@ -282,7 +295,7 @@ const Profile = ({ user }: { user: any }) => {
     }
   }, [user]);
 
-  const handleUpdateAddress = async (e: React.FormEvent) => {
+  const handleUpdateAddress = async (e: FormEvent) => {
     e.preventDefault();
     if (!user) return;
     
@@ -359,6 +372,15 @@ const Profile = ({ user }: { user: any }) => {
                 <span className="px-4 py-1.5 bg-white/20 backdrop-blur rounded-full text-xs font-bold tracking-wider uppercase">
                   {profileData?.role || 'Customer'}
                 </span>
+                {profileData?.role === 'driver' && (
+                  <Link 
+                    to="/driver/dashboard"
+                    className="px-4 py-1.5 bg-emerald-400 text-emerald-900 rounded-full text-xs font-bold tracking-wider uppercase flex items-center gap-1 hover:bg-emerald-300 transition-colors"
+                  >
+                    <BarChart3 size={12} />
+                    Go to Dashboard
+                  </Link>
+                )}
                 <span className="px-4 py-1.5 bg-white/20 backdrop-blur rounded-full text-xs font-bold tracking-wider uppercase flex items-center gap-1">
                   <Package size={12} />
                   12 Orders
@@ -454,7 +476,7 @@ const DriverRegistrationForm = ({ user, onCancel }: { user: any; onCancel: () =>
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!user) return;
 
@@ -563,25 +585,50 @@ const DriverRegistrationForm = ({ user, onCancel }: { user: any; onCancel: () =>
           <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Vehicle Type</label>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[
-              { type: 'car', icon: <Car size={18} /> },
-              { type: 'truck', icon: <Truck size={18} /> },
-              { type: 'motorcycle', icon: <Bike size={18} /> },
-              { type: 'bicycle', icon: <Bike size={18} /> }
-            ].map(({ type, icon }) => (
-              <button
-                key={type}
-                type="button"
-                onClick={() => setFormData({...formData, vehicleType: type})}
-                className={`py-3 px-2 rounded-xl border-2 font-bold capitalize transition-all flex flex-col items-center gap-2 ${
-                  formData.vehicleType === type 
-                    ? 'border-emerald-500 bg-emerald-50 text-emerald-600' 
-                    : 'border-gray-100 hover:border-gray-200 text-gray-500'
-                }`}
-              >
-                {icon}
-                <span className="text-[10px]">{type}</span>
-              </button>
-            ))}
+              { type: 'car', icon: <Car size={24} /> },
+              { type: 'truck', icon: <Truck size={24} /> },
+              { type: 'motorcycle', icon: <Zap size={24} /> },
+              { type: 'bicycle', icon: <Bike size={24} /> }
+            ].map(({ type, icon }) => {
+              const isSelected = formData.vehicleType === type;
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => setFormData({...formData, vehicleType: type})}
+                  className={`relative py-4 px-2 rounded-2xl border-2 font-bold capitalize transition-all flex flex-col items-center gap-2 group overflow-hidden ${
+                    isSelected 
+                      ? 'border-emerald-500 bg-emerald-50 text-emerald-600 shadow-md' 
+                      : 'border-transparent bg-gray-50 hover:bg-gray-100 text-gray-500 hover:border-gray-200'
+                  }`}
+                >
+                  <motion.div
+                    animate={{ 
+                      scale: isSelected ? 1.1 : 1,
+                      y: isSelected ? -2 : 0
+                    }}
+                    className={`transition-colors ${isSelected ? 'text-emerald-600' : 'text-gray-400 group-hover:text-gray-600'}`}
+                  >
+                    {icon}
+                  </motion.div>
+                  <span className={`text-[10px] tracking-tight transition-colors ${isSelected ? 'text-emerald-700' : 'text-gray-500'}`}>
+                    {type}
+                  </span>
+                  
+                  {isSelected && (
+                    <motion.div 
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      className="absolute top-2 right-2 w-4 h-4 bg-emerald-600 text-white rounded-full flex items-center justify-center"
+                    >
+                      <Check size={10} strokeWidth={4} />
+                    </motion.div>
+                  )}
+                  
+                  <div className={`absolute bottom-0 left-0 h-1 bg-emerald-500 transition-all duration-300 ${isSelected ? 'w-full' : 'w-0'}`} />
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -748,7 +795,7 @@ const Chat = ({ orderId, user }: { orderId: string, user: any }) => {
     }
   }, [messages]);
 
-  const handleSend = async (e: React.FormEvent) => {
+  const handleSend = async (e: FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !user || isSending) return;
 
@@ -830,6 +877,34 @@ const Chat = ({ orderId, user }: { orderId: string, user: any }) => {
   );
 };
 
+// Custom Leaflet Icons
+const merchantIcon = L.divIcon({
+  html: `<div class="w-10 h-10 bg-emerald-600 rounded-full border-4 border-white shadow-lg flex items-center justify-center text-white">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+  </div>`,
+  className: '',
+  iconSize: [40, 40],
+  iconAnchor: [20, 20],
+});
+
+const customerIcon = L.divIcon({
+  html: `<div class="w-10 h-10 bg-gray-900 rounded-full border-4 border-white shadow-lg flex items-center justify-center text-white">
+    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+  </div>`,
+  className: '',
+  iconSize: [40, 40],
+  iconAnchor: [20, 20],
+});
+
+const driverIcon = L.divIcon({
+  html: `<div class="w-12 h-12 bg-white rounded-2xl border-4 border-emerald-500 shadow-xl flex items-center justify-center text-emerald-600">
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-2.18-2.725A1 1 0 0 0 18 9.5H15"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+  </div>`,
+  className: '',
+  iconSize: [48, 48],
+  iconAnchor: [24, 24],
+});
+
 // Recenter helper component
 const RecenterMap = ({ lat, lng }: { lat: number; lng: number }) => {
   const map = useMap();
@@ -904,7 +979,19 @@ const OrderTracking = ({ user }: { user: any }) => {
               />
               {order.currentLocation && (
                 <>
-                  <Marker position={[order.currentLocation.lat, order.currentLocation.lng]}>
+                  <Marker position={[44.0521, -123.0868]} icon={merchantIcon}>
+                    <Popup>
+                      <div className="font-bold">Merchant Location</div>
+                      <div className="text-xs text-gray-500">Pick-up Hub</div>
+                    </Popup>
+                  </Marker>
+                  <Marker position={[44.0621, -123.0968]} icon={customerIcon}>
+                    <Popup>
+                      <div className="font-bold">Your Location</div>
+                      <div className="text-xs text-gray-500">Delivery point</div>
+                    </Popup>
+                  </Marker>
+                  <Marker position={[order.currentLocation.lat, order.currentLocation.lng]} icon={driverIcon}>
                     <Popup>
                       <div className="font-bold">Phoenix Driver</div>
                       <div className="text-xs text-gray-500">Approaching your location</div>
@@ -989,12 +1076,262 @@ const OrderTracking = ({ user }: { user: any }) => {
   );
 };
 
+const DriverDashboard = ({ user }: { user: any }) => {
+  const [activeOrders, setActiveOrders] = useState<Order[]>([]);
+  const [completedOrders, setCompletedOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isDriver, setIsDriver] = useState(false);
+  const [earningsRange, setEarningsRange] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
+
+  useEffect(() => {
+    if (!user) return;
+
+    const checkRole = async () => {
+      const userRef = doc(db, 'users', user.uid);
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists() && userSnap.data().role === 'driver') {
+        setIsDriver(true);
+      } else {
+        setIsDriver(false);
+      }
+    };
+    checkRole();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !isDriver) return;
+
+    const qActive = query(
+      collection(db, 'orders'),
+      where('driverId', '==', user.uid),
+      where('status', 'in', ['confirmed', 'preparing', 'out-for-delivery'])
+    );
+
+    const qCompleted = query(
+      collection(db, 'orders'),
+      where('driverId', '==', user.uid),
+      where('status', '==', 'delivered')
+    );
+
+    const unsubActive = onSnapshot(qActive, (snap) => {
+      setActiveOrders(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Order[]);
+      setLoading(false);
+    });
+
+    const unsubCompleted = onSnapshot(qCompleted, (snap) => {
+      setCompletedOrders(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Order[]);
+    });
+
+    return () => {
+      unsubActive();
+      unsubCompleted();
+    };
+  }, [user, isDriver]);
+
+  const stats = React.useMemo(() => {
+    const now = new Date();
+    const threshold = new Date();
+    
+    if (earningsRange === 'daily') {
+      threshold.setHours(0, 0, 0, 0);
+    } else if (earningsRange === 'weekly') {
+      threshold.setDate(now.getDate() - 7);
+    } else if (earningsRange === 'monthly') {
+      threshold.setMonth(now.getMonth() - 1);
+    }
+
+    const filtered = completedOrders.filter(order => {
+      // @ts-ignore - assuming createdAt or deliveredAt exists in doc data
+      const dateStr = order.deliveredAt || order.createdAt || new Date().toISOString();
+      return new Date(dateStr) >= threshold;
+    });
+
+    const earnings = filtered.reduce((acc, order) => acc + (order.total * 0.15), 0);
+    return { earnings, count: filtered.length };
+  }, [completedOrders, earningsRange]);
+
+  if (!user || (!loading && !isDriver)) {
+    return (
+      <div className="pt-32 px-4 text-center">
+        <h2 className="text-2xl font-bold mb-2">Access Denied</h2>
+        <p className="text-gray-500">You must be a registered driver to view this dashboard.</p>
+        <Link to="/" className="inline-block mt-8 px-8 py-3 bg-gray-900 text-white rounded-xl font-bold">Return Home</Link>
+      </div>
+    );
+  }
+
+  const totalEarnings = completedOrders.reduce((acc, order) => acc + (order.total * 0.15), 0); // 15% commission base example
+
+  return (
+    <div className="pt-24 pb-12 px-4 max-w-7xl mx-auto min-h-screen">
+      <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-4">
+        <div>
+          <h1 className="text-4xl font-bold tracking-tight mb-2">Driver Dashboard</h1>
+          <p className="text-gray-500 flex items-center gap-2">
+            <span className="w-2 h-2 bg-green-500 rounded-full"></span> Active Session • {user.displayName}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-4">
+           <div className="bg-white px-6 py-3 rounded-2xl border border-gray-100 shadow-sm flex items-center gap-3">
+              <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center">
+                <DollarSign size={20} />
+              </div>
+              <div>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Lifetime Earnings</p>
+                <p className="text-xl font-bold text-gray-900">${totalEarnings.toFixed(2)}</p>
+              </div>
+           </div>
+
+           <div className="bg-gray-50 p-1 rounded-2xl border border-gray-200 flex">
+              {(['daily', 'weekly', 'monthly'] as const).map((range) => (
+                <button
+                  key={range}
+                  onClick={() => setEarningsRange(range)}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${
+                    earningsRange === range 
+                      ? 'bg-white text-emerald-600 shadow-sm' 
+                      : 'text-gray-400 hover:text-gray-600'
+                  }`}
+                >
+                  {range}
+                </button>
+              ))}
+           </div>
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-3 gap-8 mb-12">
+        <div className="lg:col-span-1 space-y-6">
+          <div className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-xl">
+             <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+               <DollarSign className="text-emerald-500" size={24} /> Range Earnings
+             </h3>
+             <div className="space-y-2">
+                <p className="text-4xl font-bold tracking-tight text-gray-900">${stats.earnings.toFixed(2)}</p>
+                <p className="text-sm font-medium text-gray-500">{stats.count} completed deliveries</p>
+             </div>
+             <div className="mt-8 pt-8 border-t border-gray-50">
+                <div className="flex justify-between items-center mb-4">
+                   <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Payout Status</p>
+                   <span className="px-2 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-bold rounded-md">Pending</span>
+                </div>
+                <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                   <div className="h-full bg-emerald-500 w-2/3"></div>
+                </div>
+             </div>
+          </div>
+
+          <div className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-xl">
+             <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+               <BarChart3 className="text-emerald-500" size={24} /> Performance
+             </h3>
+             <div className="space-y-6">
+                <div className="flex justify-between items-end border-b border-gray-50 pb-4">
+                   <div>
+                      <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-1">Total Deliveries</p>
+                      <p className="text-3xl font-bold">{completedOrders.length}</p>
+                   </div>
+                   <div className="text-right">
+                      <p className="text-emerald-500 text-xs font-bold">+12%</p>
+                      <p className="text-[10px] text-gray-400 uppercase tracking-widest">Growth</p>
+                   </div>
+                </div>
+                <div>
+                   <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-3">Recent Activity</p>
+                   <div className="space-y-4">
+                      {completedOrders.slice(0, 3).map(order => (
+                        <div key={order.id} className="flex items-center gap-3">
+                           <div className="w-8 h-8 bg-gray-50 rounded-lg flex items-center justify-center text-gray-400">
+                              <CheckCircle2 size={16} />
+                           </div>
+                           <div className="flex-1">
+                              <p className="text-sm font-bold truncate">#{order.id}</p>
+                              <p className="text-[10px] text-gray-400">Delivered successfully</p>
+                           </div>
+                           <p className="text-sm font-bold text-emerald-600">+${(order.total * 0.15).toFixed(2)}</p>
+                        </div>
+                      ))}
+                   </div>
+                </div>
+             </div>
+          </div>
+        </div>
+
+        <div className="lg:col-span-2 space-y-8">
+           <div className="flex items-center justify-between">
+              <h3 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+                Active Orders <span className="bg-emerald-500 text-white text-xs px-2 py-0.5 rounded-full">{activeOrders.length}</span>
+              </h3>
+              <button className="text-sm font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1">
+                View History <ChevronRight size={16} />
+              </button>
+           </div>
+
+           {activeOrders.length === 0 ? (
+             <div className="bg-gray-50 border-2 border-dashed border-gray-100 rounded-[40px] p-20 text-center">
+                <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm">
+                   <Truck className="text-gray-300" size={40} />
+                </div>
+                <h4 className="text-xl font-bold text-gray-900 mb-2">No active deliveries</h4>
+                <p className="text-gray-500 max-w-xs mx-auto">Toggle your status to online to start receiving regional aggregate and meal orders.</p>
+                <button className="mt-8 px-10 py-4 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg shadow-emerald-900/20 active:scale-95">
+                  Go Online
+                </button>
+             </div>
+           ) : (
+             <div className="grid gap-6">
+                {activeOrders.map(order => (
+                  <motion.div 
+                    layout
+                    key={order.id}
+                    className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-xl flex flex-col md:flex-row md:items-center gap-8 relative overflow-hidden group"
+                  >
+                    <div className="absolute top-0 right-0 w-24 h-full bg-emerald-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    <div className="relative z-10 flex-1">
+                      <div className="flex items-center gap-3 mb-4">
+                        <span className="px-3 py-1 bg-gray-900 text-white text-[10px] font-bold uppercase tracking-widest rounded-lg">Order #{order.id}</span>
+                        <span className="px-3 py-1 bg-emerald-100 text-emerald-600 text-[10px] font-bold uppercase tracking-widest rounded-lg">{order.status}</span>
+                      </div>
+                      <h4 className="text-2xl font-bold mb-2">Regional Pickup</h4>
+                      <div className="flex items-center gap-4 text-gray-500 text-sm">
+                         <div className="flex items-center gap-1">
+                            <MapPin size={16} className="text-emerald-500" />
+                            <span>Santa Clara Hub</span>
+                         </div>
+                         <span>•</span>
+                         <div className="flex items-center gap-1">
+                            <Clock size={16} className="text-emerald-500" />
+                            <span>12-15 mins</span>
+                         </div>
+                      </div>
+                    </div>
+                    <div className="relative z-10 flex gap-3">
+                      <Link 
+                        to={`/track/${order.id}`}
+                        className="px-8 py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 transition-all flex items-center gap-2"
+                      >
+                        Navigate <Navigation size={18} />
+                      </Link>
+                      <button className="w-14 h-14 bg-gray-50 text-gray-900 rounded-2xl flex items-center justify-center hover:bg-emerald-50 hover:text-emerald-600 transition-all">
+                        <MessageSquare size={22} />
+                      </button>
+                    </div>
+                  </motion.div>
+                ))}
+             </div>
+           )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const SearchPage = () => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  const handleSearch = async (e: React.FormEvent) => {
+  const handleSearch = async (e: FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
     
@@ -1134,7 +1471,7 @@ const MerchantPage = ({ user }: { user: any }) => {
     fetchMerchant();
   }, [id]);
 
-  const handleRatingSubmit = async (e: React.FormEvent) => {
+  const handleRatingSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!user || !merchant || userRating === 0) return;
 
@@ -1289,15 +1626,688 @@ const demoMerchants: Merchant[] = [
   { id: '4', name: "Aroma Cafe", category: "Coffee", rating: 4.6, deliveryTime: "5-15 min", image: "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&q=80&w=800", description: "Single-origin coffee and freshly baked pastries." },
 ];
 
+interface BusinessPledge {
+  id: string;
+  businessName: string;
+  pledgeType: 'money' | 'materials' | 'labor';
+  details: string;
+  verified: boolean;
+  createdAt: string;
+}
+
+interface CommunityMoment {
+  id: string;
+  userId: string;
+  userName: string;
+  userPhoto?: string;
+  image: string;
+  caption: string;
+  location?: string;
+  type: 'place' | 'concert';
+  createdAt: string;
+}
+
+const MomentsWall = ({ user }: { user: any }) => {
+  const [moments, setMoments] = useState<CommunityMoment[]>([]);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [caption, setCaption] = useState('');
+  const [type, setType] = useState<'place' | 'concert'>('place');
+  const [image, setImage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const q = query(collection(db, 'moments'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snap) => {
+      setMoments(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as CommunityMoment[]);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const MAX_WIDTH = 800;
+          const MAX_HEIGHT = 600;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          setImage(dataUrl);
+        };
+        img.src = event.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !image || !caption.trim()) return;
+
+    setIsSubmitting(true);
+    try {
+      await addDoc(collection(db, 'moments'), {
+        userId: user.uid,
+        userName: user.displayName || 'Anonymous Player',
+        userPhoto: user.photoURL || '',
+        image,
+        caption,
+        type,
+        createdAt: new Date().toISOString()
+      });
+      setImage(null);
+      setCaption('');
+      setIsCapturing(false);
+    } catch (err) {
+      console.error("Error saving moment:", err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="mt-24 space-y-12">
+      <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+        <div>
+          <h2 className="text-3xl font-bold tracking-tight mb-2">Community Spotlights</h2>
+          <p className="text-gray-500">Capture and share your favorite Eugene moments—from hidden gems to epic concerts.</p>
+        </div>
+        <button 
+          onClick={() => setIsCapturing(true)}
+          className="flex items-center gap-2 px-8 py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 transition-all shadow-xl active:scale-95"
+        >
+          <Camera size={20} /> Share a Moment
+        </button>
+      </div>
+
+      <AnimatePresence>
+        {isCapturing && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-md"
+          >
+            <div className="bg-white rounded-[40px] w-full max-w-xl p-8 lg:p-12 shadow-2xl relative overflow-hidden">
+               <button 
+                 onClick={() => setIsCapturing(false)}
+                 className="absolute top-6 right-6 p-2 hover:bg-gray-100 rounded-full transition-colors"
+               >
+                 <X size={24} />
+               </button>
+
+               <h3 className="text-2xl font-bold mb-8">Post a Community Moment</h3>
+               
+               <form onSubmit={handleSubmit} className="space-y-6">
+                  <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="aspect-video bg-gray-50 rounded-3xl border-2 border-dashed border-gray-200 flex flex-col items-center justify-center cursor-pointer hover:bg-gray-100 transition-all relative overflow-hidden group"
+                  >
+                    {image ? (
+                      <img src={image} className="w-full h-full object-cover" alt="Preview" />
+                    ) : (
+                      <>
+                        <ImageIcon size={48} className="text-gray-300 mb-4 group-hover:scale-110 transition-transform" />
+                        <p className="text-gray-400 font-bold">Snap or Upload Photo</p>
+                      </>
+                    )}
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      onChange={handleImageChange} 
+                      accept="image/*" 
+                      capture="environment"
+                      className="hidden" 
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <button 
+                      type="button"
+                      onClick={() => setType('place')}
+                      className={`py-3 rounded-xl border-2 font-bold transition-all ${type === 'place' ? 'border-emerald-500 bg-emerald-50 text-emerald-600' : 'border-gray-100 text-gray-500'}`}
+                    >
+                      Favorite Place
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => setType('concert')}
+                      className={`py-3 rounded-xl border-2 font-bold transition-all ${type === 'concert' ? 'border-emerald-500 bg-emerald-50 text-emerald-600' : 'border-gray-100 text-gray-500'}`}
+                    >
+                      Epic Concert
+                    </button>
+                  </div>
+
+                  <textarea 
+                    value={caption}
+                    onChange={(e) => setCaption(e.target.value)}
+                    placeholder="Tell us what makes this special..."
+                    className="w-full p-6 bg-gray-50 border-2 border-transparent focus:border-emerald-500 rounded-2xl outline-none transition-all resize-none h-32"
+                    required
+                  />
+
+                  <button 
+                    type="submit"
+                    disabled={isSubmitting || !image}
+                    className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-bold disabled:opacity-50 shadow-xl shadow-emerald-200"
+                  >
+                    {isSubmitting ? "Posting..." : "Post to the Hub"}
+                  </button>
+               </form>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-8">
+        {moments.map((moment, idx) => (
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: idx * 0.05 }}
+            key={moment.id}
+            className="group bg-white rounded-[40px] overflow-hidden border border-gray-100 shadow-sm hover:shadow-2xl transition-all"
+          >
+            <div className="relative aspect-[4/5] overflow-hidden">
+               <img src={moment.image} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" alt="Moment" />
+               <div className="absolute top-4 left-4 flex items-center gap-2">
+                 <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest backdrop-blur-md ${moment.type === 'place' ? 'bg-emerald-500/80 text-white' : 'bg-orange-500/80 text-white'}`}>
+                   {moment.type === 'place' ? 'Local Gem' : 'Live Show'}
+                 </span>
+               </div>
+            </div>
+            <div className="p-6">
+              <p className="text-gray-900 font-medium leading-relaxed mb-6">"{moment.caption}"</p>
+              <div className="flex items-center justify-between border-t border-gray-50 pt-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 bg-gray-100 rounded-full overflow-hidden">
+                    {moment.userPhoto ? <img src={moment.userPhoto} alt={moment.userName} /> : <UserIcon size={16} className="m-auto text-gray-400 mt-2" />}
+                  </div>
+                  <p className="text-xs font-bold text-gray-900">{moment.userName}</p>
+                </div>
+                <div className="flex items-center gap-1 text-gray-400">
+                  <Heart size={14} className="hover:text-red-500 cursor-pointer transition-colors" />
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+interface NeighborNomination {
+  id: string;
+  nominatorId: string;
+  nominatorName: string;
+  nomineeName: string;
+  nomineeAddress?: string;
+  reason: string;
+  votes: string[];
+  status: 'nominated' | 'selected' | 'completed';
+  createdAt: string;
+}
+
+const NeighborhoodMakeover = ({ user }: { user: any }) => {
+  const [nominations, setNominations] = useState<NeighborNomination[]>([]);
+  const [isNominating, setIsNominating] = useState(false);
+  const [form, setForm] = useState({ nomineeName: '', nomineeAddress: '', reason: '' });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    const q = query(collection(db, 'nominations'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snap) => {
+      setNominations(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as NeighborNomination[]);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleNominate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !form.nomineeName || !form.reason) return;
+
+    setIsSubmitting(true);
+    try {
+      await addDoc(collection(db, 'nominations'), {
+        nominatorId: user.uid,
+        nominatorName: user.displayName || 'Anonymous',
+        ...form,
+        votes: [user.uid],
+        status: 'nominated',
+        createdAt: new Date().toISOString()
+      });
+      setForm({ nomineeName: '', nomineeAddress: '', reason: '' });
+      setIsNominating(false);
+    } catch (err) {
+      console.error("Error nominating:", err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleVote = async (nominationId: string, currentVotes: string[]) => {
+    if (!user || currentVotes.includes(user.uid)) return;
+
+    try {
+      const docRef = doc(db, 'nominations', nominationId);
+      await updateDoc(docRef, {
+        votes: arrayUnion(user.uid)
+      });
+    } catch (err) {
+      console.error("Error voting:", err);
+    }
+  };
+
+  return (
+    <div className="mt-24 space-y-12">
+      <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+        <div>
+          <h2 className="text-3xl font-bold tracking-tight mb-2">Neighborhood Makeover Election</h2>
+          <p className="text-gray-500">Nominate a neighbor for a $1,000 full-service home cleanup (windows, landscaping, trash removal).</p>
+        </div>
+        <button 
+          onClick={() => setIsNominating(true)}
+          className="flex items-center gap-2 px-8 py-4 bg-orange-600 text-white rounded-2xl font-bold hover:bg-orange-700 transition-all shadow-xl active:scale-95"
+        >
+          <Star size={20} /> Nominate a Neighbor
+        </button>
+      </div>
+
+      <AnimatePresence>
+        {isNominating && (
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+            className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-gray-900/40 backdrop-blur-md"
+          >
+            <div className="bg-white rounded-[40px] w-full max-w-xl p-8 lg:p-12 shadow-2xl relative overflow-hidden">
+               <button 
+                 onClick={() => setIsNominating(false)}
+                 className="absolute top-6 right-6 p-2 hover:bg-gray-100 rounded-full transition-colors"
+               >
+                 <X size={24} />
+               </button>
+
+               <h3 className="text-2xl font-bold mb-8">Nominate for Home Cleanup</h3>
+               
+               <form onSubmit={handleNominate} className="space-y-6">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Neighbor's Name</label>
+                    <input 
+                      required
+                      type="text" 
+                      value={form.nomineeName}
+                      onChange={(e) => setForm({...form, nomineeName: e.target.value})}
+                      className="w-full px-6 py-4 bg-gray-50 border-2 border-transparent focus:border-orange-500 rounded-2xl outline-none transition-all"
+                      placeholder="Who deserves this?"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Location / Address (Optional)</label>
+                    <input 
+                      type="text" 
+                      value={form.nomineeAddress}
+                      onChange={(e) => setForm({...form, nomineeAddress: e.target.value})}
+                      className="w-full px-6 py-4 bg-gray-50 border-2 border-transparent focus:border-orange-500 rounded-2xl outline-none transition-all"
+                      placeholder="General area or address"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Why do they need this?</label>
+                    <textarea 
+                      required
+                      value={form.reason}
+                      onChange={(e) => setForm({...form, reason: e.target.value})}
+                      className="w-full p-6 bg-gray-50 border-2 border-transparent focus:border-orange-500 rounded-2xl outline-none transition-all resize-none h-32"
+                      placeholder="Tell the community their story..."
+                    />
+                  </div>
+
+                  <button 
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="w-full py-4 bg-orange-600 text-white rounded-2xl font-bold disabled:opacity-50 shadow-xl shadow-orange-200"
+                  >
+                    {isSubmitting ? "Submitting..." : "Submit Nomination"}
+                  </button>
+               </form>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="grid md:grid-cols-2 gap-8">
+        {nominations.map((nomination, idx) => (
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: idx * 0.05 }}
+            key={nomination.id}
+            className="bg-white rounded-[40px] p-8 border border-gray-100 shadow-sm hover:shadow-xl transition-all relative overflow-hidden"
+          >
+            {nomination.status === 'selected' && (
+              <div className="absolute top-0 right-0 bg-emerald-500 text-white px-6 py-2 rounded-bl-3xl font-bold text-xs uppercase tracking-widest">
+                Winner
+              </div>
+            )}
+            
+            <div className="flex items-start justify-between gap-4 mb-6">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900 mb-1">{nomination.nomineeName}</h3>
+                <p className="text-sm font-medium text-emerald-600 flex items-center gap-1">
+                  <MapPin size={14} /> {nomination.nomineeAddress || 'Local Resident'}
+                </p>
+              </div>
+              <div className="text-center">
+                <div className="text-3xl font-bold text-gray-900">{nomination.votes.length}</div>
+                <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Endorsements</div>
+              </div>
+            </div>
+
+            <p className="text-gray-600 leading-relaxed italic mb-8">"{nomination.reason}"</p>
+
+            <div className="flex items-center justify-between border-t border-gray-50 pt-6">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center font-bold text-[10px]">
+                  {nomination.nominatorName.charAt(0)}
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-gray-400 tracking-widest uppercase">Nominated by</p>
+                  <p className="text-xs font-bold text-gray-900">{nomination.nominatorName}</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => handleVote(nomination.id, nomination.votes)}
+                disabled={!user || nomination.votes.includes(user.uid)}
+                className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold transition-all ${
+                  user && nomination.votes.includes(user.uid)
+                    ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
+                    : 'bg-gray-900 text-white hover:bg-gray-800'
+                } disabled:opacity-50`}
+              >
+                {user && nomination.votes.includes(user.uid) ? (
+                  <> <CheckCircle2 size={16} /> Endorsed</>
+                ) : (
+                  <> <Heart size={16} /> Endorse</>
+                )}
+              </button>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const CommunityImpactHub = ({ user }: { user: any }) => {
+  const [pledges, setPledges] = useState<BusinessPledge[]>([]);
+  const [formData, setFormData] = useState({
+    businessName: '',
+    pledgeType: 'money',
+    details: ''
+  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+
+  useEffect(() => {
+    const q = query(collection(db, 'pledges'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snap) => {
+      setPledges(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as BusinessPledge[]);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!formData.businessName.trim()) return;
+
+    setIsSubmitting(true);
+    try {
+      await addDoc(collection(db, 'pledges'), {
+        ...formData,
+        verified: false,
+        createdAt: new Date().toISOString()
+      });
+      setSubmitted(true);
+      setFormData({ businessName: '', pledgeType: 'money', details: '' });
+      setTimeout(() => setSubmitted(false), 5000);
+    } catch (err) {
+      console.error("Error submitting pledge:", err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="pt-24 pb-12 px-4 max-w-7xl mx-auto min-h-screen">
+      <div className="text-center mb-16">
+        <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-600 rounded-full text-xs font-bold border border-emerald-100 mb-6 uppercase tracking-widest">
+          Patriotism & Loyalty
+        </div>
+        <h1 className="text-4xl lg:text-6xl font-bold tracking-tight mb-6">Community Impact Hub</h1>
+        <p className="text-gray-500 max-w-2xl mx-auto text-lg">
+          Support our mission with specialized <b>cash donations for the elderly</b> or material pledges. Local businesses standing together to build a better Eugene.
+        </p>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-12 items-start mb-20">
+        {/* Pledge Form */}
+        <div className="bg-white p-8 lg:p-12 rounded-[40px] border border-gray-100 shadow-2xl">
+          <h2 className="text-2xl font-bold mb-2">Pledge Your Support</h2>
+          <p className="text-gray-500 text-sm mb-8">Contribute funds for the elderly or construction materials for local housing projects.</p>
+          
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Business Name</label>
+              <input 
+                required
+                type="text" 
+                value={formData.businessName}
+                onChange={(e) => setFormData({...formData, businessName: e.target.value})}
+                className="w-full px-6 py-4 bg-gray-50 border-2 border-transparent focus:border-emerald-500 rounded-2xl outline-none transition-all"
+                placeholder="E.g. Eugene Concrete Solutions"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Contribution Type</label>
+              <div className="grid grid-cols-3 gap-3">
+                {['money', 'materials', 'labor'].map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setFormData({...formData, pledgeType: type as any})}
+                    className={`py-3 rounded-xl border-2 font-bold capitalize transition-all ${
+                      formData.pledgeType === type 
+                        ? 'border-emerald-500 bg-emerald-50 text-emerald-600' 
+                        : 'border-gray-100 text-gray-500'
+                    }`}
+                  >
+                    {type}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Details</label>
+              <textarea 
+                required
+                rows={4}
+                value={formData.details}
+                onChange={(e) => setFormData({...formData, details: e.target.value})}
+                className="w-full px-6 py-4 bg-gray-50 border-2 border-transparent focus:border-emerald-500 rounded-2xl outline-none transition-all resize-none"
+                placeholder="Specify what you'd like to donate (e.g. 50 bags of concrete, $500, or 40 hours of electrical labor)"
+              />
+            </div>
+            <button 
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-bold hover:bg-emerald-500 transition-all shadow-xl shadow-emerald-900/20 active:scale-95 disabled:opacity-50"
+            >
+              {isSubmitting ? "Submitting..." : "Submit Pledge"}
+            </button>
+            {submitted && (
+              <p className="text-center text-emerald-600 font-bold animate-bounce mt-4">
+                Thank you! Your pledge has been recorded and is being verified.
+              </p>
+            )}
+          </form>
+        </div>
+
+        {/* Wall of Honor */}
+        <div className="space-y-8">
+           <div className="flex items-center justify-between">
+              <h2 className="text-2xl font-bold flex items-center gap-2">
+                <ShieldCheck className="text-emerald-500" /> Wall of Honor
+              </h2>
+              <span className="text-sm font-bold text-gray-400 uppercase tracking-widest">{pledges.length} Verified Partners</span>
+           </div>
+           
+           <div className="grid gap-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
+              {pledges.length === 0 ? (
+                <div className="p-12 bg-gray-50 rounded-[32px] border-2 border-dashed border-gray-100 text-center">
+                   <p className="text-gray-400 italic">Be the first business to pledge support!</p>
+                </div>
+              ) : (
+                pledges.map((pledge, idx) => (
+                  <motion.div 
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: idx * 0.05 }}
+                    key={pledge.id}
+                    className="p-6 bg-white rounded-3xl border border-gray-100 shadow-sm flex items-center justify-between group hover:border-emerald-200 transition-all"
+                  >
+                    <div className="flex items-center gap-4">
+                       <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center font-bold">
+                          {pledge.businessName[0].toUpperCase()}
+                       </div>
+                       <div>
+                          <p className="font-bold text-gray-900">{pledge.businessName}</p>
+                          <p className="text-xs text-gray-500 capitalize">{pledge.pledgeType} • {new Date(pledge.createdAt).toLocaleDateString()}</p>
+                       </div>
+                    </div>
+                    {pledge.verified && <CheckCircle2 className="text-emerald-500" size={20} />}
+                  </motion.div>
+                ))
+              )}
+           </div>
+        </div>
+      </div>
+
+      <NeighborhoodMakeover user={user} />
+
+      <MomentsWall user={user} />
+
+      {/* Band Giveaway Section */}
+      <div className="mt-24 bg-gray-900 rounded-[48px] p-8 lg:p-16 text-white relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl -mr-48 -mt-48"></div>
+        <div className="relative z-10 grid lg:grid-cols-2 gap-12 items-center">
+          <div>
+            <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/10 rounded-full text-[10px] font-bold uppercase tracking-widest mb-6">
+              <Flame size={12} className="text-orange-400" /> Musicians Exclusive
+            </div>
+            <h2 className="text-3xl lg:text-5xl font-bold mb-6 tracking-tight">Trailer Giveaway for <span className="text-emerald-400">Local Bands.</span></h2>
+            <p className="text-gray-400 text-lg mb-8 leading-relaxed">
+              We know the struggle of hauling gear to gigs. We're giving away a free <b>5x8 enclosed trailer</b> to one lucky Eugene-area band. Register your band details today and stay tuned for the live drawing.
+            </p>
+            <div className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/10">
+              <div className="w-12 h-12 bg-emerald-600 rounded-xl flex items-center justify-center font-bold">5x8</div>
+              <div>
+                <p className="font-bold">Heavy-Duty Cargo Trailer</p>
+                <p className="text-xs text-gray-400">Custom Phoenix Wrap included</p>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-white text-gray-900 p-8 rounded-[32px]">
+            <h3 className="text-xl font-bold mb-6">Band Registration</h3>
+            <form 
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const form = e.target as HTMLFormElement;
+                const bandName = (form.elements.namedItem('bandName') as HTMLInputElement).value;
+                const genre = (form.elements.namedItem('genre') as HTMLInputElement).value;
+                try {
+                  await addDoc(collection(db, 'band_giveaway'), {
+                     bandName,
+                     genre,
+                     createdAt: new Date().toISOString()
+                  });
+                  alert("Band registered successfully! Good luck!");
+                  form.reset();
+                } catch (err) {
+                  console.error(err);
+                }
+              }} 
+              className="space-y-4"
+            >
+              <div>
+                <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 ml-1">Band Name</label>
+                <input required name="bandName" className="w-full px-5 py-3 bg-gray-50 border-2 border-transparent focus:border-emerald-500 rounded-xl outline-none" placeholder="E.g. The Eugene Echoes" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1 ml-1">Music Genre</label>
+                <input required name="genre" className="w-full px-5 py-3 bg-gray-50 border-2 border-transparent focus:border-emerald-500 rounded-xl outline-none" placeholder="E.g. Indie Rock / Jazz" />
+              </div>
+              <button type="submit" className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-500 transition-all shadow-lg active:scale-95">
+                Enter Giveaway
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const Home = () => {
   return (
     <div className="pt-20 pb-12">
       {/* Hero Section */}
       <section className="px-4 mb-12">
         <div className="max-w-7xl mx-auto bg-gradient-to-br from-emerald-600 to-teal-600 rounded-[32px] overflow-hidden relative shadow-2xl shadow-emerald-200">
-          <div className="absolute top-0 right-0 w-1/2 h-full hidden lg:block opacity-20">
-            <div className="absolute -top-20 -right-20 w-80 h-80 bg-white rounded-full blur-3xl"></div>
-            <div className="absolute bottom-20 right-40 w-40 h-40 bg-white rounded-full blur-2xl"></div>
+          <div className="absolute top-0 right-0 w-1/2 h-full hidden lg:block overflow-hidden">
+            {/* The "empty green space" phoenix silhouette */}
+            <motion.div
+              initial={{ opacity: 0, x: 100, rotate: 10, scale: 0.8 }}
+              animate={{ opacity: 0.8, x: 0, rotate: 0, scale: 1 }}
+              transition={{ duration: 1.2, delay: 0.3, ease: "easeOut" }}
+              className="absolute right-0 top-1/2 -translate-y-1/2 w-[120%] h-full flex items-center justify-center"
+            >
+              <svg viewBox="0 0 24 24" className="w-[80%] h-[80%] text-gray-900 fill-current drop-shadow-[0_20px_50px_rgba(0,0,0,0.3)]" xmlns="http://www.w3.org/2000/svg">
+                {/* Custom sharp phoenix silhouette path */}
+                <path d="M12 2C12 2 11 4 10 5C9 6 7 6 6 6C5 6 3 5 2 5C2.5 7 4 8 6 9C7 10 9 10 10 11C10.5 11.5 11 12.5 11 13.5C11 15 10 16 9 17C8 18 7 18 6 18C7 19 8.5 20 10 20C12 20 13.5 19 14.5 17.5C15 16.5 15 15 15 13.5C15 11 16 9 18 8C20 7 22 7 23 7C22 6 20 5 18 5C17 5 15 5 14 6C13 7 12 2 12 2ZM12 8C12.5 8 13 8.5 13 9C13 9.5 12.5 10 12 10C11.5 10 11 9.5 11 9C11 8.5 11.5 8 12 8Z" />
+                {/* Adding more detail for "sharpness" */}
+                <path d="M14.5 17.5L16 22L18 19L20 21L21 16L14.5 17.5Z" />
+                <path d="M2.5 7L1 12L4 10L5 13L7 9L2.5 7Z" />
+              </svg>
+            </motion.div>
+            
+            <div className="absolute -top-20 -right-20 w-80 h-80 bg-white/10 rounded-full blur-3xl"></div>
+            <div className="absolute bottom-20 right-40 w-40 h-40 bg-white/10 rounded-full blur-2xl"></div>
           </div>
           
           <div className="relative z-10 px-8 py-16 lg:px-16 lg:py-24 max-w-2xl text-white">
@@ -1306,6 +2316,9 @@ const Home = () => {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6 }}
             >
+              <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/10 backdrop-blur rounded-full text-[10px] font-bold uppercase tracking-widest mb-6 border border-white/10">
+                <Zap size={12} className="text-emerald-300 animate-pulse" /> Spur-of-the-moment Giveaways Live
+              </div>
               <h1 className="text-4xl lg:text-7xl font-bold tracking-tight mb-6 leading-[1.1]">
                 Phoenix <br /><span className="text-emerald-100 underline decoration-2 decoration-emerald-200 underline-offset-8">Precision.</span> Express delivery.
               </h1>
@@ -1410,7 +2423,7 @@ const Home = () => {
                 Win a <span className="text-emerald-400">Mansion</span> in Eugene
               </h2>
               <p className="text-lg text-gray-400 mb-8 max-w-md">
-                Every delivery you track or driver sign-up earns you an entry to win a premier estate in the Willamette Valley.
+                Every delivery you track or driver sign-up earns you an entry to win a premier estate in the Willamette Valley. Plus, stay alert for our <b>spur-of-the-moment surprise giveaways</b> throughout the season!
               </p>
               <form 
                 onSubmit={(e) => {
@@ -1442,6 +2455,46 @@ const Home = () => {
                 <p className="text-2xl font-bold">$2,450,000.00</p>
               </div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Founder's Message Section */}
+      <section className="mt-20 px-4 max-w-7xl mx-auto">
+        <div className="grid lg:grid-cols-2 gap-12 items-center bg-emerald-50 rounded-[48px] p-8 lg:p-16 border border-emerald-100 relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-100/50 rounded-full blur-3xl -mr-32 -mt-32"></div>
+          <div className="relative z-10">
+             <div className="w-16 h-16 bg-emerald-600 text-white rounded-2xl flex items-center justify-center mb-6 shadow-lg">
+                <UserIcon size={32} />
+             </div>
+             <h2 className="text-3xl lg:text-4xl font-bold mb-6 tracking-tight text-emerald-900">The Founder's Resolve</h2>
+             <p className="text-gray-700 text-lg leading-relaxed mb-6 italic">
+               "I've spent a large portion of my life taking—taking opportunities, taking space, taking from others. But there comes a point where you realize that a life of accumulation is a life of emptiness. I've decided to dedicate the rest of my years to giving back. Phoenix Express isn't just a logistics company; it's the engine for the community projects I'm now committed to providing for the elderly, the poor, and the disabled in our region. We aren't just moving packages; we're moving resources to where they are needed most."
+             </p>
+             <p className="font-bold text-emerald-900">— Founder, Phoenix Express</p>
+             <Link to="/community" className="mt-8 inline-flex items-center gap-2 text-emerald-600 font-bold hover:gap-3 transition-all">
+               Visit the Community Hub <ChevronRight size={20} />
+             </Link>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+             <div className="space-y-4">
+                <div className="aspect-square rounded-3xl overflow-hidden shadow-xl">
+                   <img src="https://images.unsplash.com/photo-1541888941259-7a1955d8c430?auto=format&fit=crop&q=80&w=600" alt="Construction" className="w-full h-full object-cover" />
+                </div>
+                <div className="p-6 bg-white rounded-3xl border border-emerald-100 shadow-sm">
+                   <p className="text-2xl font-bold text-emerald-600 mb-1">12+</p>
+                   <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Active Projects</p>
+                </div>
+             </div>
+             <div className="space-y-4 pt-12">
+                <div className="p-6 bg-emerald-600 text-white rounded-3xl shadow-xl shadow-emerald-900/20">
+                   <p className="text-2xl font-bold mb-1">$2.4M</p>
+                   <p className="text-[10px] font-bold text-emerald-100 uppercase tracking-widest">Est. Impact Value</p>
+                </div>
+                <div className="aspect-square rounded-3xl overflow-hidden shadow-xl">
+                   <img src="https://images.unsplash.com/photo-1464931084227-28f7422f281e?auto=format&fit=crop&q=80&w=600" alt="Helping hand" className="w-full h-full object-cover" />
+                </div>
+             </div>
           </div>
         </div>
       </section>
@@ -1487,26 +2540,34 @@ const Home = () => {
 
 export default function App() {
   const [user, setUser] = useState<any>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isCartOpen, setIsCartOpen] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       if (u) {
-        // Sync user to Firestore
         const userRef = doc(db, 'users', u.uid);
-        getDoc(userRef).then(docSnap => {
-          if (!docSnap.exists()) {
-            setDoc(userRef, {
+        // Direct listener for profile changes
+        const unsubProfile = onSnapshot(userRef, (docSnap) => {
+          if (docSnap.exists()) {
+            setProfile(docSnap.data() as UserProfile);
+          } else {
+            const newProfile = {
               uid: u.uid,
-              email: u.email,
-              displayName: u.displayName,
-              photoURL: u.photoURL,
+              email: u.email || '',
+              displayName: u.displayName || '',
+              photoURL: u.photoURL || '',
               role: 'customer',
               createdAt: new Date().toISOString()
-            });
+            };
+            setDoc(userRef, newProfile);
+            setProfile(newProfile);
           }
         });
+        return () => unsubProfile();
+      } else {
+        setProfile(null);
       }
     });
     return () => unsubscribe();
@@ -1515,13 +2576,15 @@ export default function App() {
   return (
     <Router>
       <div className="min-h-screen bg-white font-sans text-gray-900 selection:bg-emerald-100 selection:text-emerald-900">
-        <Navbar user={user} toggleCart={() => setIsCartOpen(!isCartOpen)} />
+        <Navbar user={user} profile={profile} toggleCart={() => setIsCartOpen(!isCartOpen)} />
         
         <main>
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/driver" element={<DriverLanding user={user} />} />
+            <Route path="/driver/dashboard" element={<DriverDashboard user={user} />} />
+            <Route path="/community" element={<CommunityImpactHub user={user} />} />
             <Route path="/track/:id" element={<OrderTracking user={user} />} />
             <Route path="/profile" element={<Profile user={user} />} />
             <Route path="/merchant/:id" element={<MerchantPage user={user} />} />
