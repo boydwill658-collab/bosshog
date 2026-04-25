@@ -1,0 +1,100 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function isAdmin() { return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)); }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    // User Rules
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.uid is string && data.uid == request.auth.uid &&
+             data.email is string && data.email.size() <= 256 &&
+             data.role in ['customer', 'driver', 'admin'];
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      allow update: if isOwner(userId) && isValidUser(incoming()) && 
+                    incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'address']);
+    }
+
+    // Merchant Rules (Public read, Admin write)
+    function isValidMerchant(data) {
+      return data.name is string && data.name.size() <= 100 &&
+             data.category is string;
+    }
+
+    match /merchants/{merchantId} {
+      allow read: if true;
+      allow create: if isAdmin();
+      allow update: if isAdmin() || (
+        isSignedIn() && 
+        incoming().diff(existing()).affectedKeys().hasOnly(['ratings', 'rating']) &&
+        incoming().ratings.size() > existing().ratings.size()
+      );
+    }
+
+    // Order Rules
+    function isValidOrder(data) {
+      return data.customerId is string && data.merchantId is string &&
+             data.items is list && data.total is number &&
+             data.status in ['pending', 'confirmed', 'preparing', 'out-for-delivery', 'delivered', 'cancelled'];
+    }
+
+    match /orders/{orderId} {
+      allow get: if isOwner(existing().customerId) || isAdmin();
+      allow list: if isOwner(resource.data.customerId) || isAdmin();
+      allow create: if isSignedIn() && isOwner(incoming().customerId) && isValidOrder(incoming());
+      allow update: if (isOwner(existing().customerId) && incoming().status == 'cancelled' && 
+                        existing().status == 'pending' && 
+                        incoming().diff(existing()).affectedKeys().hasOnly(['status'])) ||
+                    isAdmin();
+    }
+
+    // Driver Application Rules
+    function isValidDriverApp(data) {
+      return data.uid == request.auth.uid &&
+             data.fullName is string && data.fullName.size() <= 100 &&
+             data.phoneNumber is string && data.phoneNumber.size() <= 20 &&
+             data.isVeteran is bool &&
+             data.vehicleType in ['car', 'truck', 'motorcycle', 'bicycle'] &&
+             data.status == 'pending';
+    }
+
+    match /drivers/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidDriverApp(incoming());
+      allow update: if isAdmin();
+    }
+
+    // Chat Rules
+    function isValidChatMessage(data) {
+      return data.senderId == request.auth.uid &&
+             data.text is string && data.text.size() <= 1000;
+    }
+
+    match /chats/{orderId}/messages/{messageId} {
+      allow read: if isSignedIn() && (
+        get(/databases/$(database)/documents/orders/$(orderId)).data.customerId == request.auth.uid ||
+        get(/databases/$(database)/documents/orders/$(orderId)).data.driverId == request.auth.uid ||
+        isAdmin()
+      );
+      allow create: if isSignedIn() && (
+        get(/databases/$(database)/documents/orders/$(orderId)).data.customerId == request.auth.uid ||
+        get(/databases/$(database)/documents/orders/$(orderId)).data.driverId == request.auth.uid
+      ) && isValidChatMessage(incoming());
+    }
+  }
+}

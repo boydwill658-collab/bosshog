@@ -1,0 +1,112 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["customer", "driver", "admin"] },
+        "address": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Merchant": {
+      "title": "Merchant",
+      "description": "Restaurants or stores",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "rating": { "type": "number" },
+        "deliveryTime": { "type": "string" },
+        "image": { "type": "string" },
+        "menu": { "type": "array" },
+        "ratings": {
+          "type": "array",
+          "description": "List of user ratings: { userId: string, score: number, comment: string }"
+        }
+      },
+      "required": ["name", "category"]
+    },
+    "Order": {
+      "title": "Delivery Order",
+      "description": "Orders placed by users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerId": { "type": "string" },
+        "driverId": { "type": "string" },
+        "merchantId": { "type": "string" },
+        "items": { "type": "array" },
+        "total": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "preparing", "out-for-delivery", "delivered", "cancelled"] },
+        "currentLocation": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["customerId", "merchantId", "items", "total", "status"]
+    },
+    "DriverApplication": {
+      "title": "Driver Application",
+      "description": "Applications for new drivers",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "fullName": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "isVeteran": { "type": "boolean" },
+        "vehicleType": { "type": "string", "enum": ["car", "truck", "motorcycle", "bicycle"] },
+        "vehicleDetails": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "phoneNumber", "vehicleType"]
+    },
+    "ChatMessage": {
+      "title": "Chat Message",
+      "description": "Messages sent in an order chat",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "text", "createdAt"]
+    }
+  },
+  "firestore": {
+    "users": {
+      "schema": "User",
+      "description": "Collection of user profiles"
+    },
+    "merchants": {
+      "schema": "Merchant",
+      "description": "Collection of merchants"
+    },
+    "orders": {
+      "schema": "Order",
+      "description": "Collection of orders"
+    },
+    "drivers": {
+      "schema": "DriverApplication",
+      "description": "Collection of driver applications"
+    },
+    "chats": {
+      "schema": "ChatMessage",
+      "description": "Messages for an order chat: /chats/{orderId}/messages/{messageId}"
+    }
+  }
+}
