@@ -1,6 +1,6 @@
 {
   "name": "Phoenix Express",
   "description": "Premium delivery logistics for Eugene & Santa Clara. High-speed delivery for meals, essentials, and aggregate materials. Powered by Phoenix logistics.",
-  "requestFramePermissions": ["camera"],
+  "requestFramePermissions": ["camera", "geolocation"],
   "majorCapabilities": []
 }

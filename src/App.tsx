@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useRef, FormEvent } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { ShoppingCart, MapPin, Star, Zap, ChevronRight, Package, X, Menu, LogIn, Search, User as UserIcon, Save, CheckCircle2, AlertCircle, Truck, Clock, ShieldCheck, Ticket, ExternalLink, Navigation, Send, MessageSquare, Bird, Flame, Car, Bike, DollarSign, BarChart3, List, Check, Camera, Image as ImageIcon, Heart } from 'lucide-react';
+import { ShoppingCart, MapPin, Star, Zap, ChevronRight, Package, X, Menu, LogIn, Search, User as UserIcon, Save, CheckCircle2, AlertCircle, Truck, Clock, ShieldCheck, Ticket, ExternalLink, Navigation, Send, MessageSquare, Bird, Flame, Car, Bike, DollarSign, BarChart3, List, Check, Camera, Image as ImageIcon, Heart, Gift, Sparkles, Wand2, Cloud, Target } from 'lucide-react';
 import { auth, db } from './lib/firebase';
 import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, onSnapshot, collection, query, orderBy, addDoc, serverTimestamp, where, arrayUnion } from 'firebase/firestore';
+import { generateAIOverview, startAIChat } from './services/geminiService';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 // Fix for Leaflet marker icons
 // @ts-ignore
@@ -36,6 +38,84 @@ interface Rating {
   createdAt: string;
 }
 
+interface MenuItem {
+  id: string;
+  name: string;
+  price: number;
+  description: string;
+  image: string;
+}
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
+interface CartItem extends MenuItem {
+  quantity: number;
+  merchantId: string;
+}
+
+const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  const R = 6371; // km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+};
+
+const calculateDeliveryFee = (distance: number) => {
+  const baseRate = 2.99;
+  const perKmRate = 0.50;
+  return Math.round((baseRate + (distance * perKmRate)) * 100) / 100;
+};
+
 interface Merchant {
   id: string;
   name: string;
@@ -45,6 +125,8 @@ interface Merchant {
   image: string;
   description: string;
   ratings?: Rating[];
+  menu?: MenuItem[];
+  coords?: { lat: number; lng: number };
 }
 
 interface Order {
@@ -81,12 +163,14 @@ const RatingStars = ({ rating, size = 16 }: { rating: number; size?: number }) =
 };
 
 const MerchantCard: React.FC<{ merchant: Merchant; idx: number }> = ({ merchant, idx }) => {
+  const distance = merchant.coords ? getDistance(44.0521, -123.0868, merchant.coords.lat, merchant.coords.lng).toFixed(1) : null;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: idx * 0.1 }}
-      className="group bg-white rounded-3xl overflow-hidden border border-gray-100 hover:border-emerald-100 hover:shadow-2xl hover:shadow-emerald-100 transition-all cursor-pointer"
+      className="group bg-white rounded-3xl overflow-hidden border border-gray-100 hover:border-emerald-100 hover:shadow-2xl hover:shadow-emerald-100 hover:-translate-y-1 transition-all cursor-pointer"
     >
       <Link to={`/merchant/${merchant.id}`} className="block">
         <div className="relative aspect-[4/3] overflow-hidden">
@@ -108,7 +192,7 @@ const MerchantCard: React.FC<{ merchant: Merchant; idx: number }> = ({ merchant,
             <h3 className="font-bold text-gray-900 group-hover:text-emerald-600 transition-colors uppercase tracking-tight">{merchant.name}</h3>
           </div>
           <div className="flex items-center justify-between mb-3">
-            <p className="text-xs text-gray-500">{merchant.category} • Free Delivery</p>
+            <p className="text-xs text-gray-500">{merchant.category} {distance ? `• ${distance} km` : ''}</p>
             {merchant.ratings && merchant.ratings.length > 0 && (
               <span className="text-[10px] text-gray-400 font-medium">({merchant.ratings.length} reviews)</span>
             )}
@@ -123,8 +207,15 @@ const MerchantCard: React.FC<{ merchant: Merchant; idx: number }> = ({ merchant,
 };
 
 const Logo = () => (
-  <div className="w-12 h-12 bg-black rounded-2xl flex items-center justify-center transition-transform group-hover:scale-110 shadow-xl overflow-hidden relative">
-    <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/30 via-emerald-500/10 to-transparent"></div>
+  <div className="w-12 h-12 bg-gray-950 rounded-2xl flex items-center justify-center transition-transform group-hover:scale-110 shadow-xl overflow-hidden relative">
+    <div className="absolute inset-0">
+      <img 
+        src="https://images.unsplash.com/photo-1557683316-973673baf926?auto=format&fit=crop&q=80&w=100" 
+        alt="Logo Glow" 
+        className="w-full h-full object-cover opacity-60"
+        referrerPolicy="no-referrer"
+      />
+    </div>
     <div className="relative flex items-center justify-center">
       {/* majestic phoenix wings representation */}
       <motion.div
@@ -155,8 +246,281 @@ const Logo = () => (
   </div>
 );
 
-const Navbar = ({ user, profile, toggleCart }: { user: any; profile: UserProfile | null; toggleCart: () => void }) => {
+// Types for the new interactivity system
+interface Activity {
+  id: string;
+  user: string;
+  action: string;
+  time: string;
+  type: 'vote' | 'order' | 'moment' | 'nomination';
+}
+
+const PhoenixAI = () => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [messages, setMessages] = useState<{ role: 'user' | 'model', text: string }[]>([
+    { role: 'model', text: 'Hi! I am the Phoenix AI. How can I help you with neighborhood logistics or community events today?' }
+  ]);
+  const [input, setInput] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const handleSend = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
+
+    const userMessage = input.trim();
+    setInput('');
+    setMessages(prev => [...prev, { role: 'user', text: userMessage }]);
+    setIsLoading(true);
+
+    try {
+      const history = messages.map(m => ({
+        role: m.role,
+        parts: [{ text: m.text }]
+      }));
+      
+      const chat = startAIChat(history);
+      if (!chat) throw new Error("Chat service unavailable");
+
+      const result = await chat.sendMessage(userMessage);
+      const responseText = await result.response.text();
+      setMessages(prev => [...prev, { role: 'model', text: responseText }]);
+    } catch (error) {
+      console.error("AI Chat Error:", error);
+      setMessages(prev => [...prev, { role: 'model', text: "I'm sorry, I'm having trouble connecting right now. Please try again later." }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="fixed bottom-8 right-8 z-50">
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={() => setIsOpen(!isOpen)}
+          className="w-16 h-16 bg-emerald-600 text-white rounded-full flex items-center justify-center shadow-2xl shadow-emerald-200 relative overflow-hidden group"
+        >
+          <div className="absolute inset-0 bg-gradient-to-tr from-emerald-700 to-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+          {isOpen ? <X size={28} className="relative z-10" /> : <Sparkles size={28} className="relative z-10" />}
+        </motion.button>
+      </div>
+
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            className="fixed bottom-28 right-8 z-50 w-96 max-w-[calc(100vw-4rem)] bg-white/90 backdrop-blur-2xl rounded-[40px] shadow-2xl border border-white/50 flex flex-col overflow-hidden h-[600px] max-h-[calc(100vh-12rem)]"
+          >
+            <div className="p-6 bg-emerald-600 text-white">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-md">
+                  <Wand2 size={20} />
+                </div>
+                <div>
+                  <h3 className="font-bold">Phoenix Assistant</h3>
+                  <p className="text-[10px] text-emerald-100 uppercase tracking-widest font-bold">Always Online</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-4">
+              {messages.map((m, i) => (
+                <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] p-4 rounded-2xl text-sm ${
+                    m.role === 'user' 
+                      ? 'bg-emerald-600 text-white rounded-tr-none' 
+                      : 'bg-emerald-50 text-emerald-900 rounded-tl-none'
+                  }`}>
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+              {isLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-emerald-50 p-4 rounded-2xl rounded-tl-none flex gap-1">
+                    <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-bounce"></span>
+                    <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-bounce delay-75"></span>
+                    <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-bounce delay-150"></span>
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            <form onSubmit={handleSend} className="p-6 bg-white border-t border-gray-50 flex gap-2">
+              <input 
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder="Ask anything..."
+                className="flex-1 bg-gray-50 border-none rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+              />
+              <button 
+                type="submit"
+                disabled={isLoading || !input.trim()}
+                className="w-10 h-10 bg-gray-900 text-white rounded-xl flex items-center justify-center hover:bg-black transition-colors disabled:opacity-50"
+              >
+                <Send size={18} />
+              </button>
+            </form>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+};
+
+const PhoenixPulse = ({ user }: { user: any }) => {
+  const [points, setPoints] = useState(1240);
+  const [isGifting, setIsGifting] = useState(false);
+  const [activities, setActivities] = useState<Activity[]>([
+    { id: '1', user: 'Sarah J.', action: 'endorsed a makeover', time: '2m ago', type: 'vote' },
+    { id: '2', user: 'Mike R.', action: 'shared a moment', time: '5m ago', type: 'moment' },
+    { id: '3', user: 'Delivery #42', action: 'heading to West Eugene', time: '8m ago', type: 'order' },
+  ]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setPoints(prev => prev + 1);
+    }, 10000); // Earn 1 point every 10 seconds of dwell time
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleGift = (amount: number) => {
+    if (points >= amount) {
+      setPoints(prev => prev - amount);
+      setIsGifting(false);
+      const newActivity: Activity = {
+        id: Math.random().toString(),
+        user: 'You',
+        action: `gifted ${amount} XP to Sarah J.`,
+        time: 'Just now',
+        type: 'vote'
+      };
+      setActivities([newActivity, ...activities.slice(0, 2)]);
+    }
+  };
+
+  return (
+    <>
+      <div className="fixed bottom-8 left-8 z-50 hidden lg:block">
+        <motion.div 
+          initial={{ x: -100, opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          className="bg-white/80 backdrop-blur-2xl rounded-[32px] p-6 shadow-2xl border border-white/50 w-80"
+        >
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-emerald-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-emerald-200">
+                <Zap size={20} className="fill-current" />
+              </div>
+              <div>
+                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Your Pulse</p>
+                <p className="text-xl font-black text-gray-900">{points.toLocaleString()} <span className="text-xs font-bold text-emerald-500">XP</span></p>
+              </div>
+            </div>
+            <div className="px-3 py-1 bg-emerald-50 rounded-full text-[10px] font-bold text-emerald-600 border border-emerald-100">
+              RANK: LOCAL ELITE
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest border-b border-gray-100 pb-2">Live Neighborhood Activity</p>
+            {activities.map((activity, idx) => (
+              <motion.div 
+                key={activity.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: idx * 0.1 }}
+                className="flex items-center gap-3 group cursor-pointer"
+              >
+                <div className={`w-2 h-2 rounded-full ${
+                  activity.type === 'vote' ? 'bg-orange-500' :
+                  activity.type === 'order' ? 'bg-emerald-500' : 'bg-blue-500'
+                } animate-pulse`} />
+                <div className="flex-1">
+                  <p className="text-xs font-bold text-gray-800">
+                    {activity.user} <span className="font-medium text-gray-500">{activity.action}</span>
+                  </p>
+                </div>
+                <span className="text-[10px] font-medium text-gray-400 uppercase">{activity.time}</span>
+              </motion.div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 mt-6">
+            <Link to="/community#rewards-section" className="py-3 bg-gray-900 text-white rounded-2xl text-[10px] font-bold hover:bg-gray-800 hover:scale-[1.05] transition-all shadow-xl active:scale-95 text-center flex items-center justify-center">
+              Redeem
+            </Link>
+            <button 
+              onClick={() => setIsGifting(true)}
+              className="py-3 bg-emerald-500 text-white rounded-2xl text-[10px] font-bold hover:bg-emerald-400 hover:scale-[1.05] transition-all shadow-xl active:scale-95 flex items-center justify-center"
+            >
+              Give Points
+            </button>
+          </div>
+        </motion.div>
+      </div>
+
+      <AnimatePresence>
+        {isGifting && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-[40px] p-10 max-w-md w-full shadow-2xl text-center"
+            >
+              <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto mb-6">
+                <Gift size={40} />
+              </div>
+              <h3 className="text-3xl font-bold mb-4">Gift Your XP</h3>
+              <p className="text-gray-500 mb-8">Share your community activity points with a neighbor to help them unlock rewards faster.</p>
+              
+              <div className="space-y-4 mb-8">
+                <div className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-100">
+                  <div className="flex items-center gap-3">
+                    <img src="https://artifact.m68.us/api/v1/artifacts/42337775-69f8-41df-a55d-ea48a4da4599" className="w-10 h-10 rounded-full border border-gray-200" referrerPolicy="no-referrer" />
+                    <p className="font-bold">Sarah J.</p>
+                  </div>
+                  <button 
+                    onClick={() => handleGift(100)}
+                    className="px-4 py-2 bg-emerald-500 text-white text-xs font-bold rounded-xl hover:bg-emerald-600 transition-colors"
+                  >
+                    Send 100 XP
+                  </button>
+                </div>
+              </div>
+
+              <button 
+                onClick={() => setIsGifting(false)}
+                className="text-sm font-bold text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                Maybe later
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+};
+
+const Navbar = ({ user, profile, cart, toggleCart }: { user: any; profile: UserProfile | null; cart: CartItem[]; toggleCart: () => void }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const cartCount = cart.reduce((acc, item) => acc + item.quantity, 0);
 
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider();
@@ -170,101 +534,70 @@ const Navbar = ({ user, profile, toggleCart }: { user: any; profile: UserProfile
   const handleLogout = () => signOut(auth);
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100">
-      <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-        <Link to="/" className="flex items-center gap-2 group">
+    <nav className="fixed top-0 left-0 right-0 z-50 bg-gray-950/80 backdrop-blur-2xl border-b border-white/5 h-24">
+      <div className="max-w-7xl mx-auto h-full px-4 flex items-center justify-between">
+        <Link to="/" className="flex items-center gap-4 group">
           <Logo />
-          <span className="text-xl font-bold tracking-tight text-gray-900">Phoenix Express</span>
+          <div>
+            <h1 className="text-xl font-black text-white tracking-tighter leading-none italic uppercase">PHOENIX</h1>
+            <p className="text-[10px] font-bold text-emerald-400 tracking-[0.3em] uppercase">Logistics Core</p>
+          </div>
         </Link>
 
         {/* Desktop Nav */}
-        <div className="hidden md:flex items-center gap-8">
-          <Link to="/search" className="p-2 text-gray-600 hover:text-emerald-500 transition-colors">
-            <Search size={22} />
-          </Link>
-          <div className="flex items-center gap-2 text-gray-600 hover:text-emerald-500 cursor-pointer transition-colors text-sm font-medium">
-            <MapPin size={18} />
+        <div className="hidden lg:flex items-center gap-12 text-[11px] font-black uppercase tracking-[0.2em] text-gray-400">
+          <Link to="/merchants" className="hover:text-emerald-400 transition-colors">Retail Network</Link>
+          <button className="hover:text-emerald-400 transition-colors">Fleet Status</button>
+          <button className="hover:text-emerald-400 transition-colors flex items-center gap-2">
+            <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
+            Hub Status
+          </button>
+        </div>
+
+        <div className="flex items-center gap-6">
+          <div className="hidden md:flex items-center gap-2 text-gray-400 hover:text-emerald-500 cursor-pointer transition-all hover:scale-105 text-[11px] font-black uppercase tracking-widest bg-white/5 px-4 py-2 rounded-xl border border-white/5">
+            <MapPin size={16} className="text-emerald-500" />
             <span>Eugene, OR</span>
           </div>
-          <div className="flex items-center gap-4">
-            {user ? (
-              <div className="flex items-center gap-4">
-                {profile?.role === 'driver' && (
-                  <Link 
-                    to="/driver/dashboard" 
-                    className="flex items-center gap-2 px-4 py-2 bg-emerald-500 text-white rounded-xl text-xs font-bold hover:bg-emerald-600 transition-all shadow-sm"
-                  >
-                    <BarChart3 size={16} />
-                    Driver Hub
-                  </Link>
-                )}
-                <button 
-                  onClick={toggleCart}
-                  className="p-2 text-gray-600 hover:text-emerald-500 transition-colors relative"
-                >
-                  <ShoppingCart size={22} />
-                  <span className="absolute -top-1 -right-1 bg-emerald-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center border-2 border-white">
-                    2
-                  </span>
-                </button>
-                <Link to="/profile" className="flex items-center gap-2 p-1 pr-3 bg-gray-50 rounded-full hover:bg-gray-100 transition-colors">
-                  <img src={user.photoURL} alt="Profile" className="w-8 h-8 rounded-full border border-gray-200" />
-                  <span className="text-sm font-medium text-gray-700">{user.displayName?.split(' ')[0]}</span>
-                </Link>
-                <button onClick={handleLogout} className="text-sm text-gray-500 hover:text-red-500">Logout</button>
+
+          {user ? (
+            <div className="flex items-center gap-4 bg-white/5 p-1.5 pr-5 rounded-2xl border border-white/10 group hover:border-emerald-500/30 transition-all">
+              <div className="w-11 h-11 rounded-xl overflow-hidden shadow-lg border border-white/10">
+                <img src={user.photoURL} alt="" className="w-full h-full object-cover" />
               </div>
-            ) : (
+              <div className="hidden sm:block">
+                <p className="text-[10px] font-black text-white uppercase tracking-[0.15em] leading-none">{user.displayName?.split(' ')[0]}</p>
+                <div className="flex items-center gap-1.5 mt-1">
+                  <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></div>
+                  <p className="text-[10px] font-bold text-emerald-400">Hub Ready</p>
+                </div>
+              </div>
               <button 
-                onClick={handleLogin}
-                className="flex items-center gap-2 px-5 py-2.5 bg-gray-900 text-white rounded-full font-medium hover:bg-gray-800 transition-all hover:shadow-lg active:scale-95"
+                onClick={handleLogout}
+                className="ml-2 p-2 text-gray-500 hover:text-red-500 transition-colors"
+                title="Disconnect"
               >
-                <LogIn size={18} />
-                Sign In
+                <X size={16} />
               </button>
+            </div>
+          ) : (
+            <button 
+              onClick={handleLogin}
+              className="px-6 py-3 bg-white text-gray-950 rounded-2xl font-black text-[11px] uppercase tracking-widest hover:bg-emerald-400 hover:text-white transition-all active:scale-95 shadow-xl shadow-white/5"
+            >
+              Initialize Node
+            </button>
+          )}
+          <button onClick={toggleCart} className="w-13 h-13 bg-gray-900 border border-white/5 text-white rounded-2xl flex items-center justify-center relative hover:bg-black transition-all group active:scale-95">
+            <ShoppingCart size={22} className="group-hover:scale-110 transition-transform" />
+            {cartCount > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 w-6 h-6 bg-emerald-500 text-[11px] font-black rounded-full flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.5)] border-2 border-gray-950">
+                {cartCount}
+              </span>
             )}
-          </div>
+          </button>
         </div>
-
-        {/* Mobile Nav Toggle */}
-        <div className="hidden md:flex gap-6 mr-8">
-          <Link to="/community" className="text-sm font-bold text-gray-500 hover:text-emerald-600 transition-colors uppercase tracking-widest">Community Hub</Link>
-          <Link to="/community" className="text-sm font-bold text-gray-500 hover:text-emerald-600 transition-colors uppercase tracking-widest">Band Giveaway</Link>
-        </div>
-        <button className="md:hidden p-2" onClick={() => setIsMenuOpen(!isMenuOpen)}>
-          {isMenuOpen ? <X /> : <Menu />}
-        </button>
       </div>
-
-      {/* Mobile Menu */}
-      <AnimatePresence>
-        {isMenuOpen && (
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="absolute top-16 left-0 right-0 bg-white border-b border-gray-100 p-4 md:hidden shadow-xl"
-          >
-           <div className="flex flex-col gap-4">
-              <div className="flex items-center gap-2 text-gray-600 py-2 border-b border-gray-50">
-                <MapPin size={18} />
-                <span className="text-sm">Eugene, OR</span>
-              </div>
-              {user ? (
-                <>
-                  <Link to="/profile" onClick={() => setIsMenuOpen(false)} className="py-2 text-gray-900 font-medium tracking-tight">Profile</Link>
-                  <button onClick={toggleCart} className="py-2 text-gray-900 font-medium tracking-tight text-left flex justify-between items-center">
-                    <span>Your Cart</span>
-                    <span className="bg-emerald-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">2 items</span>
-                  </button>
-                  <button onClick={handleLogout} className="py-2 text-red-500 font-medium tracking-tight text-left">Logout</button>
-                </>
-              ) : (
-                <button onClick={handleLogin} className="w-full py-3 bg-gray-900 text-white rounded-xl font-medium">Sign In with Google</button>
-              )}
-           </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </nav>
   );
 };
@@ -438,7 +771,7 @@ const Profile = ({ user }: { user: any }) => {
                 <button 
                   type="submit"
                   disabled={isSaving || address === profileData?.address}
-                  className={`flex items-center gap-2 px-8 py-3.5 rounded-2xl font-bold transition-all active:scale-95 shadow-lg ${
+                  className={`flex items-center gap-2 px-8 py-3.5 rounded-2xl font-bold transition-all active:scale-95 shadow-lg hover:scale-105 ${
                     isSaving || address === profileData?.address
                       ? 'bg-gray-100 text-gray-400 cursor-not-allowed shadow-none'
                       : 'bg-emerald-500 text-white hover:bg-emerald-400 shadow-emerald-100'
@@ -596,7 +929,7 @@ const DriverRegistrationForm = ({ user, onCancel }: { user: any; onCancel: () =>
                   key={type}
                   type="button"
                   onClick={() => setFormData({...formData, vehicleType: type})}
-                  className={`relative py-4 px-2 rounded-2xl border-2 font-bold capitalize transition-all flex flex-col items-center gap-2 group overflow-hidden ${
+                  className={`relative py-4 px-2 rounded-2xl border-2 font-bold capitalize transition-all flex flex-col items-center gap-2 group overflow-hidden hover:scale-105 ${
                     isSelected 
                       ? 'border-emerald-500 bg-emerald-50 text-emerald-600 shadow-md' 
                       : 'border-transparent bg-gray-50 hover:bg-gray-100 text-gray-500 hover:border-gray-200'
@@ -693,11 +1026,11 @@ const DriverLanding = ({ user }: { user: any }) => {
                       setShowForm(true);
                     }
                   }}
-                  className="px-10 py-4 bg-emerald-600 text-white rounded-2xl font-bold text-lg hover:bg-emerald-500 transition-all shadow-xl shadow-emerald-900/40"
+                  className="px-10 py-4 bg-emerald-600 text-white rounded-2xl font-bold text-lg hover:bg-emerald-500 hover:scale-105 transition-all shadow-xl shadow-emerald-900/40"
                 >
                   Register Now
                 </button>
-                <button className="px-10 py-4 bg-white/10 hover:bg-white/20 transition-all rounded-2xl font-bold text-lg backdrop-blur">
+                <button className="px-10 py-4 bg-white/10 hover:bg-white/20 hover:scale-105 transition-all rounded-2xl font-bold text-lg backdrop-blur">
                   Learn More
                 </button>
               </div>
@@ -914,87 +1247,174 @@ const RecenterMap = ({ lat, lng }: { lat: number; lng: number }) => {
   return null;
 };
 
+const DriverRating = ({ driverId, orderId, onComplete }: { driverId: string; orderId: string; onComplete: () => void }) => {
+  const [score, setScore] = useState(5);
+  const [comment, setComment] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
+    try {
+      const ratingPath = `users/${driverId}/driver_ratings`;
+      await addDoc(collection(db, ratingPath), {
+        score,
+        comment,
+        orderId,
+        customerId: auth.currentUser?.uid,
+        customerName: auth.currentUser?.displayName || 'Anonymous Fan',
+        createdAt: serverTimestamp()
+      });
+      onComplete();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `users/${driverId}/driver_ratings`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="bg-gray-900/60 backdrop-blur-3xl p-10 rounded-[56px] border border-white/5 shadow-2xl space-y-8">
+      <div className="text-center">
+        <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.3em] mb-4">Verification Successful</p>
+        <h3 className="text-3xl font-black text-white italic uppercase tracking-tighter leading-none mb-2">RATE YOUR OPERATOR</h3>
+        <p className="text-gray-500 text-xs font-bold uppercase tracking-widest">Efficiency & Protocol Feedback</p>
+      </div>
+
+      <div className="flex justify-center gap-3">
+        {[1, 2, 3, 4, 5].map((s) => (
+          <button
+            key={s}
+            onClick={() => setScore(s)}
+            className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${
+              score >= s ? 'bg-emerald-500 text-gray-950 shadow-[0_0_20px_rgba(16,185,129,0.4)]' : 'bg-white/5 text-gray-500 border border-white/5'
+            }`}
+          >
+            <Star size={24} fill={score >= s ? 'currentColor' : 'none'} />
+          </button>
+        ))}
+      </div>
+
+      <textarea
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        placeholder="ADD OPTIONAL PROTOCOL NOTES..."
+        className="w-full bg-white/5 border border-white/5 rounded-3xl p-6 text-white text-xs font-bold uppercase tracking-widest placeholder:text-gray-700 focus:outline-none focus:border-emerald-500/50 min-h-[120px] transition-all"
+      />
+
+      <button
+        onClick={handleSubmit}
+        disabled={isSubmitting}
+        className="w-full h-18 bg-white text-gray-950 rounded-[32px] font-black text-[11px] uppercase tracking-[0.2em] hover:bg-emerald-400 hover:text-white transition-all shadow-2xl disabled:opacity-50"
+      >
+        {isSubmitting ? 'TRANSMITTING...' : 'SUBMIT FEEDBACK'}
+      </button>
+    </div>
+  );
+};
+
 const OrderTracking = ({ user }: { user: any }) => {
   const { id } = useParams();
   const [order, setOrder] = useState<Order | null>(null);
   const [eta, setEta] = useState(12);
+  const [hasRated, setHasRated] = useState(false);
 
   useEffect(() => {
-    // Simulate real-time tracking
-    const initialPos = { lat: 44.0521, lng: -123.0868 };
-    setOrder({
-      id: id || 'ORD-8822',
-      status: 'preparing',
-      merchantId: '1',
-      customerId: 'current-user',
-      total: 42.50,
-      currentLocation: initialPos,
-      items: [{ name: 'Urban Greens Bundle', price: 42.50 }]
+    if (!id || id === 'ORD-8822') {
+      // Simulate real-time tracking for demo/mock
+      const initialPos = { lat: 44.0521, lng: -123.0868 };
+      setOrder({
+        id: id || 'ORD-8822',
+        status: 'preparing',
+        merchantId: '1',
+        customerId: 'current-user',
+        total: 42.50,
+        currentLocation: initialPos,
+        items: [{ name: 'Urban Greens Bundle', price: 42.50 }]
+      });
+
+      const interval = setInterval(() => {
+        setOrder(prev => {
+          if (!prev) return null;
+          const newLat = prev.currentLocation!.lat + 0.0001;
+          const newLng = prev.currentLocation!.lng + 0.00015;
+          setEta(e => Math.max(0, e - (Math.random() > 0.8 ? 1 : 0)));
+          let newStatus = prev.status;
+          if (eta === 0) newStatus = 'delivered';
+          else if (eta < 5) newStatus = 'out-for-delivery';
+          
+          return {
+            ...prev,
+            currentLocation: { lat: newLat, lng: newLng },
+            status: newStatus,
+            driverId: prev.driverId || 'ALEX-PHX-922'
+          };
+        });
+      }, 3000);
+
+      return () => clearInterval(interval);
+    }
+
+    const unsub = onSnapshot(doc(db, 'orders', id), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data() as Order;
+        setOrder({ ...data, id: snap.id });
+        if (data.currentLocation) {
+          // Mocking ETA reduction if data doesn't have it
+          setEta(prev => Math.max(1, prev - 1));
+        }
+      }
     });
 
-    const interval = setInterval(() => {
-      setOrder(prev => {
-        if (!prev) return null;
-        const newLat = prev.currentLocation!.lat + 0.0001;
-        const newLng = prev.currentLocation!.lng + 0.00015;
-        setEta(e => Math.max(0, e - (Math.random() > 0.8 ? 1 : 0)));
-        return {
-          ...prev,
-          currentLocation: { lat: newLat, lng: newLng },
-          status: eta < 5 ? 'out-for-delivery' : 'preparing'
-        };
-      });
-    }, 3000);
-
-    return () => clearInterval(interval);
+    return () => unsub();
   }, [id, eta]);
 
   if (!order) return null;
 
   return (
-    <div className="pt-24 pb-12 px-4 max-w-7xl mx-auto min-h-screen">
-      <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+    <div className="pt-24 pb-12 px-4 max-w-7xl mx-auto min-h-screen bg-gray-950">
+      <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-6 pb-8 border-b border-white/5">
         <div>
-          <h1 className="text-4xl font-bold tracking-tight mb-2">Live Tracking</h1>
-          <p className="text-gray-500 font-medium">Order ID: <span className="text-emerald-600">#{order.id}</span></p>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+            <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.3em]">Live Matrix Stream</p>
+          </div>
+          <h1 className="text-5xl lg:text-7xl font-black tracking-tighter text-white italic uppercase leading-none">TRACKING.</h1>
+          <p className="text-gray-500 font-bold mt-2 uppercase tracking-widest text-[10px]">Signal Hash: <span className="text-emerald-500">{order.id}</span></p>
         </div>
-        <div className="bg-emerald-50 px-8 py-4 rounded-[32px] border border-emerald-100 flex items-center gap-6">
+        <div className="bg-white/5 backdrop-blur-3xl px-10 py-6 rounded-[48px] border border-white/10 flex items-center gap-10 shadow-2xl">
           <div className="text-right">
-            <p className="text-[10px] font-bold text-emerald-600/60 uppercase tracking-widest mb-1">Estimated Arrival</p>
-            <div className="text-3xl font-bold text-emerald-600 flex items-center gap-2">
-              <Clock size={24} /> {eta} mins
+            <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em] mb-2">Tactical ETA</p>
+            <div className="text-4xl font-black text-white italic tracking-tighter flex items-center gap-3">
+              <Clock size={28} className="text-emerald-500" /> {eta} MINS
             </div>
           </div>
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 space-y-6">
-          {/* Real Leaflet Map */}
-          <div className="relative h-[500px] bg-gray-100 rounded-[40px] overflow-hidden border-4 border-white shadow-2xl">
-            <MapContainer center={[44.0521, -123.0868]} zoom={15} scrollWheelZoom={false} className="h-full w-full">
+      <div className="grid lg:grid-cols-3 gap-12">
+        <div className="lg:col-span-2 space-y-8">
+          {/* Real Leaflet Map - Obsidian Edition */}
+          <div className="relative h-[650px] bg-gray-900 rounded-[64px] overflow-hidden border border-white/10 shadow-2xl group">
+            <MapContainer center={[44.0521, -123.0868]} zoom={15} scrollWheelZoom={false} className="h-full w-full grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all duration-700">
               <TileLayer
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
               />
               {order.currentLocation && (
                 <>
                   <Marker position={[44.0521, -123.0868]} icon={merchantIcon}>
                     <Popup>
-                      <div className="font-bold">Merchant Location</div>
-                      <div className="text-xs text-gray-500">Pick-up Hub</div>
+                      <div className="font-black italic uppercase tracking-tight">Pickup Node</div>
                     </Popup>
                   </Marker>
                   <Marker position={[44.0621, -123.0968]} icon={customerIcon}>
                     <Popup>
-                      <div className="font-bold">Your Location</div>
-                      <div className="text-xs text-gray-500">Delivery point</div>
+                      <div className="font-black italic uppercase tracking-tight">Drop Point</div>
                     </Popup>
                   </Marker>
                   <Marker position={[order.currentLocation.lat, order.currentLocation.lng]} icon={driverIcon}>
                     <Popup>
-                      <div className="font-bold">Phoenix Driver</div>
-                      <div className="text-xs text-gray-500">Approaching your location</div>
+                      <div className="font-black italic uppercase tracking-tight">Phoenix Asset</div>
                     </Popup>
                   </Marker>
                   <RecenterMap lat={order.currentLocation.lat} lng={order.currentLocation.lng} />
@@ -1002,71 +1422,86 @@ const OrderTracking = ({ user }: { user: any }) => {
               )}
             </MapContainer>
 
-            {/* Floating Driver Info */}
-            <div className="absolute bottom-6 left-6 right-6 z-[1000] bg-white/95 backdrop-blur p-5 rounded-[32px] flex items-center gap-4 shadow-2xl border border-white/40">
-              <div className="w-14 h-14 bg-gray-900 rounded-2xl flex items-center justify-center text-emerald-500 shadow-lg">
-                <Truck size={30} />
+            {/* Tactical HUD Overlay Elements */}
+            <div className="absolute top-8 left-8 z-[1000] space-y-3">
+              <div className="bg-gray-950/80 backdrop-blur-3xl px-4 py-2 rounded-xl border border-white/10 flex items-center gap-3">
+                <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                <p className="text-[9px] font-black text-white uppercase tracking-widest">Link Active</p>
+              </div>
+              <div className="bg-gray-950/80 backdrop-blur-3xl px-4 py-2 rounded-xl border border-white/10">
+                <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest mb-1">Coordinates</p>
+                <p className="text-[10px] font-mono text-emerald-400">
+                  {order.currentLocation?.lat.toFixed(4)}, {order.currentLocation?.lng.toFixed(4)}
+                </p>
+              </div>
+            </div>
+
+            {/* Floating Driver Info - Command Card */}
+            <div className="absolute bottom-8 left-8 right-8 z-[1000] bg-gray-950/80 backdrop-blur-3xl p-8 rounded-[48px] flex items-center gap-6 shadow-2xl border border-white/10 group/card transition-all hover:bg-gray-900/90 hover:border-emerald-500/30">
+              <div className="w-18 h-18 bg-emerald-500/20 rounded-3xl flex items-center justify-center text-emerald-400 shadow-xl border border-emerald-500/30 group-hover/card:scale-110 transition-transform">
+                <Truck size={36} />
               </div>
               <div>
-                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">En Route</p>
-                <p className="font-bold text-lg">Alex R. <span className="text-gray-400 font-normal text-sm ml-2">Toyota RAV4 (ZPH-922)</span></p>
+                <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.3em] mb-2">Fleet Operator</p>
+                <p className="font-black text-2xl text-white italic tracking-tighter uppercase">Alex R. <span className="text-gray-500 font-bold text-sm ml-4 not-italic tracking-normal">TOYOTA RAV4 • PHX-922</span></p>
               </div>
-              <div className="ml-auto flex gap-2">
-                <button className="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center hover:bg-emerald-200 transition-colors">
-                  <Navigation size={20} />
+              <div className="ml-auto flex gap-4">
+                <button className="w-16 h-16 bg-white/5 text-emerald-400 rounded-3xl flex items-center justify-center hover:bg-emerald-500 hover:text-white transition-all shadow-xl active:scale-95 border border-white/5">
+                  <Navigation size={24} />
                 </button>
-                <button className="px-6 py-3 bg-gray-900 text-white rounded-2xl text-sm font-bold hover:bg-gray-800 transition-all active:scale-95">
-                  Call
+                <button className="px-10 py-5 bg-white text-gray-950 rounded-3xl font-black text-[11px] uppercase tracking-widest hover:bg-emerald-400 hover:text-white transition-all active:scale-95 shadow-2xl">
+                  SIGNAL
                 </button>
               </div>
             </div>
           </div>
 
-          {/* Steps */}
-          <div className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-xl">
-            <div className="flex flex-col gap-8">
+          {/* Tactical Progress Steps */}
+          <div className="bg-white/5 backdrop-blur-3xl p-12 rounded-[64px] border border-white/5 shadow-2xl">
+            <div className="grid sm:grid-cols-4 gap-8">
               {[
-                { label: 'Order Confirmed', time: '12:05 PM', done: true },
-                { label: 'Preparing Items', time: '12:15 PM', done: order.status !== 'pending' },
-                { label: 'Out for Delivery', time: '--:--', done: order.status === 'out-for-delivery' },
-                { label: 'Arrived', time: '--:--', done: order.status === 'delivered' }
+                { label: 'Signal Locked', icon: <Zap size={18} />, done: true },
+                { label: 'Cargo Secured', icon: <Package size={18} />, done: order.status !== 'pending' },
+                { label: 'In Transit', icon: <Navigation size={18} />, done: order.status === 'out-for-delivery' },
+                { label: 'Destination', icon: <CheckCircle2 size={18} />, done: order.status === 'delivered' }
               ].map((step, idx) => (
-                <div key={idx} className="flex gap-4 items-start relative">
-                  {idx !== 3 && (
-                    <div className={`absolute top-8 left-4 w-0.5 h-full -ml-[1px] ${step.done ? 'bg-emerald-600' : 'bg-gray-100'}`}></div>
-                  )}
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center z-10 transition-colors ${step.done ? 'bg-emerald-600 text-white' : 'bg-gray-100 text-gray-300'}`}>
-                    <CheckCircle2 size={16} />
+                <div key={idx} className="flex flex-col items-center text-center group/step">
+                  <div className={`w-16 h-16 rounded-[24px] flex items-center justify-center mb-4 transition-all duration-500 shadow-2xl border ${step.done ? 'bg-emerald-500 text-gray-950 border-emerald-400 scale-110' : 'bg-gray-900 text-gray-600 border-white/5'}`}>
+                    {step.icon}
                   </div>
-                  <div className="flex-1 pb-4">
-                    <p className={`font-bold ${step.done ? 'text-gray-900' : 'text-gray-300'}`}>{step.label}</p>
-                    <p className="text-xs text-gray-400 font-medium tracking-wide">{step.time}</p>
-                  </div>
+                  <p className={`text-[10px] font-black uppercase tracking-[0.15em] ${step.done ? 'text-white' : 'text-gray-600'}`}>{step.label}</p>
                 </div>
               ))}
             </div>
           </div>
         </div>
 
-        <div className="lg:col-span-1 space-y-8">
+        <div className="lg:col-span-1 space-y-12">
+          {order.status === 'delivered' && !hasRated && (
+             <DriverRating 
+               driverId={order.driverId || 'ALEX-PHX-922'} 
+               orderId={order.id} 
+               onComplete={() => setHasRated(true)} 
+             />
+          )}
           <Chat orderId={order.id} user={user} />
           
-          <div className="bg-gray-50 p-8 rounded-[40px] border border-gray-100 flex flex-col">
-            <h3 className="text-xl font-bold mb-6 text-gray-900">Delivery Details</h3>
-            <div className="space-y-4 mb-8">
-               <div className="bg-white p-5 rounded-2xl shadow-sm border border-emerald-50">
-                  <p className="text-[10px] font-bold text-emerald-600/60 uppercase tracking-widest mb-1">Destination</p>
-                  <p className="text-sm font-semibold leading-relaxed text-gray-800">123 Pine St, Apt 4B<br />Eugene, OR 97401</p>
+          <div className="bg-gray-900/40 backdrop-blur-3xl p-10 rounded-[56px] border border-white/5 flex flex-col shadow-2xl">
+            <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter mb-8 leading-none">MANIFEST</h3>
+            <div className="space-y-6 mb-10">
+               <div className="bg-white/5 p-8 rounded-[32px] border border-white/5">
+                  <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.3em] mb-4">TARGET NODE</p>
+                  <p className="text-lg font-black italic text-white tracking-tight leading-relaxed uppercase">123 Pine St, Apt 4B<br />Eugene, OR 97401</p>
                </div>
-               <div className="bg-white p-5 rounded-2xl shadow-sm">
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Items</p>
-                  <p className="text-xs font-bold text-gray-600">Urban Greens Bundle (x1)</p>
+               <div className="bg-white/5 p-8 rounded-[32px] border border-white/10">
+                  <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.3em] mb-4">CARGO DATA</p>
+                  <p className="text-sm font-black text-white uppercase italic tracking-widest">Urban Greens Bundle <span className="text-emerald-500 ml-2">x1</span></p>
                </div>
             </div>
-            <div className="mt-auto pt-6 border-t border-gray-200">
-               <p className="text-xs text-gray-500 mb-4 italic">Need help with your order? Our Eugene logistics hub is standing by.</p>
-               <button className="w-full py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 transition-colors shadow-lg active:scale-95">
-                 Support Center
+            <div className="mt-auto pt-10 border-t border-white/5">
+               <p className="text-xs text-gray-500 font-medium mb-8 leading-relaxed italic uppercase tracking-wider">Phoenix Response Teams active in your sector.</p>
+               <button className="w-full h-18 bg-emerald-500/10 text-emerald-400 rounded-[32px] font-black text-[12px] uppercase tracking-[0.3em] hover:bg-emerald-500 hover:text-white transition-all shadow-2xl active:scale-95 border border-emerald-500/20">
+                 Request Intel
                </button>
             </div>
           </div>
@@ -1074,6 +1509,77 @@ const OrderTracking = ({ user }: { user: any }) => {
       </div>
     </div>
   );
+};
+
+const DriverTrackingButton = ({ orderId }: { orderId: string }) => {
+  const [isTracking, setIsTracking] = useState(false);
+  const watchId = useRef<number | null>(null);
+
+  const toggleTracking = () => {
+    if (isTracking) {
+      if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
+      watchId.current = null;
+      setIsTracking(false);
+    } else {
+      if (!navigator.geolocation) {
+        alert("Geolocation is not supported by your browser");
+        return;
+      }
+      setIsTracking(true);
+      watchId.current = navigator.geolocation.watchPosition(
+        async (position) => {
+          const { latitude, longitude } = position.coords;
+          try {
+            await updateDoc(doc(db, 'orders', orderId), {
+              currentLocation: { lat: latitude, lng: longitude }
+            });
+          } catch (error) {
+            console.error("Error updating location:", error);
+          }
+        },
+        (error) => console.error(error),
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      );
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (watchId.current !== null) navigator.geolocation.clearWatch(watchId.current);
+    };
+  }, []);
+
+  return (
+    <button 
+      onClick={toggleTracking}
+      className={`px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] transition-all flex items-center gap-2 border ${
+        isTracking 
+          ? 'bg-red-500/10 text-red-500 border-red-500/30' 
+          : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30 hover:bg-emerald-500 hover:text-white'
+      }`}
+    >
+      <div className={`w-2 h-2 rounded-full ${isTracking ? 'bg-red-500 animate-ping' : 'bg-emerald-500'}`}></div>
+      {isTracking ? 'Transmitting Signal' : 'Broadcast Location'}
+    </button>
+  );
+};
+
+const useDriverRatings = (driverId: string) => {
+  const [ratings, setRatings] = useState<any[]>([]);
+  useEffect(() => {
+    if (!driverId) return;
+    const q = query(
+      collection(db, `users/${driverId}/driver_ratings`),
+      orderBy('createdAt', 'desc')
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setRatings(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `users/${driverId}/driver_ratings`);
+    });
+    return () => unsub();
+  }, [driverId]);
+  return ratings;
 };
 
 const DriverDashboard = ({ user }: { user: any }) => {
@@ -1150,6 +1656,8 @@ const DriverDashboard = ({ user }: { user: any }) => {
     return { earnings, count: filtered.length };
   }, [completedOrders, earningsRange]);
 
+  const ratings = useDriverRatings(user.uid);
+
   if (!user || (!loading && !isDriver)) {
     return (
       <div className="pt-32 px-4 text-center">
@@ -1163,34 +1671,36 @@ const DriverDashboard = ({ user }: { user: any }) => {
   const totalEarnings = completedOrders.reduce((acc, order) => acc + (order.total * 0.15), 0); // 15% commission base example
 
   return (
-    <div className="pt-24 pb-12 px-4 max-w-7xl mx-auto min-h-screen">
-      <div className="flex flex-col md:flex-row md:items-center justify-between mb-12 gap-4">
+    <div className="pt-24 pb-12 px-4 max-w-7xl mx-auto min-h-screen bg-gray-950">
+      <div className="flex flex-col md:flex-row md:items-center justify-between mb-16 gap-6 pb-8 border-b border-white/5">
         <div>
-          <h1 className="text-4xl font-bold tracking-tight mb-2">Driver Dashboard</h1>
-          <p className="text-gray-500 flex items-center gap-2">
-            <span className="w-2 h-2 bg-green-500 rounded-full"></span> Active Session • {user.displayName}
-          </p>
+          <div className="flex items-center gap-3 mb-4">
+             <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+             <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.3em]">Fleet Status: Active</p>
+          </div>
+          <h1 className="text-5xl lg:text-7xl font-black tracking-tighter text-white italic uppercase leading-none">DRIVER CORE.</h1>
+          <p className="text-gray-500 font-bold mt-2 uppercase tracking-widest text-[10px]">Session Operator: <span className="text-white">{user.displayName}</span></p>
         </div>
         <div className="flex flex-wrap gap-4">
-           <div className="bg-white px-6 py-3 rounded-2xl border border-gray-100 shadow-sm flex items-center gap-3">
-              <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center">
-                <DollarSign size={20} />
+           <div className="bg-white/5 backdrop-blur-3xl px-8 py-4 rounded-[32px] border border-white/10 shadow-2xl flex items-center gap-4">
+              <div className="w-12 h-12 bg-emerald-500/20 text-emerald-400 rounded-2xl flex items-center justify-center border border-emerald-500/30">
+                <DollarSign size={24} />
               </div>
               <div>
-                <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Lifetime Earnings</p>
-                <p className="text-xl font-bold text-gray-900">${totalEarnings.toFixed(2)}</p>
+                <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest leading-none mb-1">Lifetime Yield</p>
+                <p className="text-2xl font-black text-white italic tracking-tighter">${totalEarnings.toFixed(2)}</p>
               </div>
            </div>
 
-           <div className="bg-gray-50 p-1 rounded-2xl border border-gray-200 flex">
+           <div className="bg-white/5 p-1 rounded-2xl border border-white/5 flex backdrop-blur-md">
               {(['daily', 'weekly', 'monthly'] as const).map((range) => (
                 <button
                   key={range}
                   onClick={() => setEarningsRange(range)}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${
+                  className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
                     earningsRange === range 
-                      ? 'bg-white text-emerald-600 shadow-sm' 
-                      : 'text-gray-400 hover:text-gray-600'
+                      ? 'bg-white text-gray-950 shadow-xl scale-105' 
+                      : 'text-gray-500 hover:text-white'
                   }`}
                 >
                   {range}
@@ -1200,55 +1710,77 @@ const DriverDashboard = ({ user }: { user: any }) => {
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-8 mb-12">
-        <div className="lg:col-span-1 space-y-6">
-          <div className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-xl">
-             <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
-               <DollarSign className="text-emerald-500" size={24} /> Range Earnings
-             </h3>
-             <div className="space-y-2">
-                <p className="text-4xl font-bold tracking-tight text-gray-900">${stats.earnings.toFixed(2)}</p>
-                <p className="text-sm font-medium text-gray-500">{stats.count} completed deliveries</p>
+      <div className="grid lg:grid-cols-3 gap-12 mb-16">
+        <div className="lg:col-span-1 space-y-8">
+          <div className="bg-gray-900/40 backdrop-blur-3xl p-10 rounded-[56px] border border-white/5 shadow-2xl">
+             <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.3em] mb-6 flex items-center gap-2">
+               <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></span> Range Performance
+             </p>
+             <div className="space-y-4">
+                <p className="text-6xl font-black tracking-tighter text-white italic leading-none">${stats.earnings.toFixed(2)}</p>
+                <p className="text-xs font-bold text-gray-500 uppercase tracking-[0.2em]">{stats.count} Operations Verified</p>
              </div>
-             <div className="mt-8 pt-8 border-t border-gray-50">
+             <div className="mt-10 pt-10 border-t border-white/5">
                 <div className="flex justify-between items-center mb-4">
-                   <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">Payout Status</p>
-                   <span className="px-2 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-bold rounded-md">Pending</span>
+                   <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Payout Sequence</p>
+                   <span className="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-[10px] font-black uppercase tracking-widest rounded-lg border border-emerald-500/20">Authorized</span>
                 </div>
-                <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-                   <div className="h-full bg-emerald-500 w-2/3"></div>
+                <div className="w-full h-3 bg-white/5 rounded-full overflow-hidden border border-white/5">
+                   <div className="h-full bg-emerald-500 w-2/3 shadow-[0_0_15px_rgba(16,185,129,0.5)]"></div>
                 </div>
              </div>
           </div>
 
-          <div className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-xl">
-             <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
-               <BarChart3 className="text-emerald-500" size={24} /> Performance
-             </h3>
-             <div className="space-y-6">
-                <div className="flex justify-between items-end border-b border-gray-50 pb-4">
+          <div className="bg-gray-900/40 backdrop-blur-3xl p-10 rounded-[56px] border border-white/5 shadow-2xl">
+             <p className="text-[10px] font-black text-gray-500 uppercase tracking-[0.3em] mb-8">Network Status</p>
+             <div className="space-y-10">
+                <div className="flex justify-between items-end border-b border-white/5 pb-8">
                    <div>
-                      <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-1">Total Deliveries</p>
-                      <p className="text-3xl font-bold">{completedOrders.length}</p>
+                      <p className="text-gray-600 text-[10px] font-black uppercase tracking-widest mb-2">Total Node Drops</p>
+                      <p className="text-4xl font-black text-white italic tracking-tighter">{completedOrders.length}</p>
                    </div>
                    <div className="text-right">
-                      <p className="text-emerald-500 text-xs font-bold">+12%</p>
-                      <p className="text-[10px] text-gray-400 uppercase tracking-widest">Growth</p>
+                      <p className="text-emerald-400 text-sm font-black">+12.4%</p>
+                      <p className="text-[9px] text-gray-600 uppercase font-black tracking-widest">Efficiency</p>
                    </div>
                 </div>
+
+                <div className="pt-8 border-t border-white/5">
+                   <p className="text-gray-500 text-[10px] font-black uppercase tracking-widest mb-6">Recent Operator Feedback</p>
+                   <div className="space-y-6">
+                      {ratings.length === 0 ? (
+                        <p className="text-xs text-gray-700 font-bold uppercase tracking-widest italic">No Intel Recorded</p>
+                      ) : (
+                        ratings.slice(0, 3).map(rating => (
+                          <div key={rating.id} className="bg-white/5 p-5 rounded-2xl border border-white/5">
+                             <div className="flex items-center justify-between mb-3">
+                                <div className="flex gap-1">
+                                   {[1,2,3,4,5].map(s => (
+                                     <Star key={s} size={10} className={s <= rating.score ? 'text-emerald-500 fill-emerald-500' : 'text-gray-700'} />
+                                   ))}
+                                </div>
+                                <span className="text-[8px] font-black text-gray-600 uppercase tracking-widest">{new Date(rating.createdAt?.seconds * 1000).toLocaleDateString()}</span>
+                             </div>
+                             <p className="text-[10px] text-gray-400 font-medium italic line-clamp-2">"{rating.comment || 'No specific notes recorded.'}"</p>
+                          </div>
+                        ))
+                      )}
+                   </div>
+                </div>
+
                 <div>
-                   <p className="text-gray-400 text-xs font-bold uppercase tracking-widest mb-3">Recent Activity</p>
-                   <div className="space-y-4">
+                   <p className="text-gray-500 text-[10px] font-black uppercase tracking-widest mb-6">Recent Signal History</p>
+                   <div className="space-y-6">
                       {completedOrders.slice(0, 3).map(order => (
-                        <div key={order.id} className="flex items-center gap-3">
-                           <div className="w-8 h-8 bg-gray-50 rounded-lg flex items-center justify-center text-gray-400">
-                              <CheckCircle2 size={16} />
+                        <div key={order.id} className="flex items-center gap-4 group/item">
+                           <div className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center text-gray-600 border border-white/5 group-hover/item:border-emerald-500/30 transition-all">
+                              <CheckCircle2 size={18} />
                            </div>
                            <div className="flex-1">
-                              <p className="text-sm font-bold truncate">#{order.id}</p>
-                              <p className="text-[10px] text-gray-400">Delivered successfully</p>
+                              <p className="text-[11px] font-black text-white uppercase tracking-wider">#{order.id}</p>
+                              <p className="text-[9px] text-gray-600 uppercase font-bold tracking-widest">Verified Completion</p>
                            </div>
-                           <p className="text-sm font-bold text-emerald-600">+${(order.total * 0.15).toFixed(2)}</p>
+                           <p className="text-sm font-black text-emerald-400 italic font-mono">+${(order.total * 0.15).toFixed(2)}</p>
                         </div>
                       ))}
                    </div>
@@ -1257,63 +1789,65 @@ const DriverDashboard = ({ user }: { user: any }) => {
           </div>
         </div>
 
-        <div className="lg:col-span-2 space-y-8">
-           <div className="flex items-center justify-between">
-              <h3 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-                Active Orders <span className="bg-emerald-500 text-white text-xs px-2 py-0.5 rounded-full">{activeOrders.length}</span>
+        <div className="lg:col-span-2 space-y-10">
+           <div className="flex items-center justify-between mb-2">
+              <h3 className="text-3xl font-black text-white italic uppercase tracking-tighter flex items-center gap-4">
+                ACTIVE DEPLOYS <span className="w-10 h-10 bg-emerald-500 text-gray-950 text-sm italic font-black rounded-2xl flex items-center justify-center shadow-2xl">{activeOrders.length}</span>
               </h3>
-              <button className="text-sm font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1">
-                View History <ChevronRight size={16} />
+              <button className="text-[10px] font-black text-gray-500 uppercase tracking-widest hover:text-emerald-400 transition-colors flex items-center gap-2">
+                FULL ARCHIVE <ChevronRight size={14} />
               </button>
            </div>
 
            {activeOrders.length === 0 ? (
-             <div className="bg-gray-50 border-2 border-dashed border-gray-100 rounded-[40px] p-20 text-center">
-                <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm">
-                   <Truck className="text-gray-300" size={40} />
+             <div className="bg-white/5 border border-dashed border-white/10 rounded-[64px] p-24 text-center backdrop-blur-sm">
+                <div className="w-24 h-24 bg-gray-900 rounded-full flex items-center justify-center mx-auto mb-8 shadow-2xl border border-white/5">
+                   <Truck className="text-gray-700" size={48} />
                 </div>
-                <h4 className="text-xl font-bold text-gray-900 mb-2">No active deliveries</h4>
-                <p className="text-gray-500 max-w-xs mx-auto">Toggle your status to online to start receiving regional aggregate and meal orders.</p>
-                <button className="mt-8 px-10 py-4 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg shadow-emerald-900/20 active:scale-95">
-                  Go Online
+                <h4 className="text-2xl font-black text-white italic uppercase tracking-tighter mb-4 leading-none">NO PAYLOADS ASSIGNED</h4>
+                <p className="text-gray-500 text-sm font-bold uppercase tracking-widest max-w-xs mx-auto mb-10 leading-relaxed">System standby. Toggle regional beacon to initiate signal intercept.</p>
+                <button className="px-12 py-5 bg-white text-gray-950 rounded-3xl font-black text-[11px] uppercase tracking-widest hover:bg-emerald-400 hover:text-white transition-all shadow-2xl active:scale-95">
+                  INITIALIZE BEACON
                 </button>
              </div>
            ) : (
-             <div className="grid gap-6">
+             <div className="grid gap-8">
                 {activeOrders.map(order => (
                   <motion.div 
                     layout
                     key={order.id}
-                    className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-xl flex flex-col md:flex-row md:items-center gap-8 relative overflow-hidden group"
+                    className="bg-gray-900/60 backdrop-blur-3xl p-10 rounded-[56px] border border-white/5 shadow-2xl flex flex-col md:flex-row md:items-center gap-10 relative overflow-hidden group hover:border-emerald-500/20 transition-all duration-500"
                   >
-                    <div className="absolute top-0 right-0 w-24 h-full bg-emerald-50 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                    <div className="absolute top-0 right-0 w-32 h-full bg-emerald-500/5 opacity-0 group-hover:opacity-100 transition-opacity"></div>
                     <div className="relative z-10 flex-1">
-                      <div className="flex items-center gap-3 mb-4">
-                        <span className="px-3 py-1 bg-gray-900 text-white text-[10px] font-bold uppercase tracking-widest rounded-lg">Order #{order.id}</span>
-                        <span className="px-3 py-1 bg-emerald-100 text-emerald-600 text-[10px] font-bold uppercase tracking-widest rounded-lg">{order.status}</span>
+                      <div className="flex items-center gap-4 mb-6">
+                        <span className="px-4 py-1.5 bg-white text-gray-950 text-[10px] font-black uppercase tracking-[0.2em] rounded-xl">NODE #{order.id}</span>
+                        <span className="px-4 py-1.5 bg-emerald-500/10 text-emerald-400 text-[10px] font-black uppercase tracking-[0.2em] rounded-xl border border-emerald-500/20">{order.status}</span>
                       </div>
-                      <h4 className="text-2xl font-bold mb-2">Regional Pickup</h4>
-                      <div className="flex items-center gap-4 text-gray-500 text-sm">
-                         <div className="flex items-center gap-1">
+                      <h4 className="text-4xl font-black text-white italic uppercase tracking-tighter mb-4 leading-none">REGIONAL PICKUP</h4>
+                      <div className="flex items-center gap-6 text-gray-500 text-[10px] font-black uppercase tracking-widest">
+                         <div className="flex items-center gap-2">
                             <MapPin size={16} className="text-emerald-500" />
                             <span>Santa Clara Hub</span>
                          </div>
-                         <span>•</span>
-                         <div className="flex items-center gap-1">
+                         <div className="flex items-center gap-2">
                             <Clock size={16} className="text-emerald-500" />
-                            <span>12-15 mins</span>
+                            <span>12-15 MINS</span>
                          </div>
                       </div>
+                      <div className="flex flex-wrap items-center gap-4 mt-10">
+                        <DriverTrackingButton orderId={order.id} />
+                        <Link 
+                          to={`/track/${order.id}`}
+                          className="px-10 py-4 bg-gray-950 text-white rounded-[24px] font-black text-[10px] uppercase tracking-[0.2em] hover:bg-black transition-all flex items-center gap-3 border border-white/5"
+                        >
+                          HUD INTERFACE <Navigation size={14} />
+                        </Link>
+                      </div>
                     </div>
-                    <div className="relative z-10 flex gap-3">
-                      <Link 
-                        to={`/track/${order.id}`}
-                        className="px-8 py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 transition-all flex items-center gap-2"
-                      >
-                        Navigate <Navigation size={18} />
-                      </Link>
-                      <button className="w-14 h-14 bg-gray-50 text-gray-900 rounded-2xl flex items-center justify-center hover:bg-emerald-50 hover:text-emerald-600 transition-all">
-                        <MessageSquare size={22} />
+                    <div className="relative z-10">
+                      <button className="w-16 h-16 bg-gray-950 border border-white/10 text-gray-600 rounded-[28px] flex items-center justify-center hover:bg-emerald-500 hover:text-white transition-all shadow-2xl group/msg">
+                        <MessageSquare size={26} className="group-hover/msg:scale-110 transition-transform" />
                       </button>
                     </div>
                   </motion.div>
@@ -1323,61 +1857,207 @@ const DriverDashboard = ({ user }: { user: any }) => {
         </div>
       </div>
     </div>
+
+  );
+};
+
+const AIOverview = ({ query, results }: { query: string; results: Merchant[] }) => {
+  const [overview, setOverview] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    const fetchOverview = async () => {
+      if (!query.trim()) return;
+      setIsLoading(true);
+      const text = await generateAIOverview(`Provide an overview for search: "${query}". We found ${results.length} results.`);
+      setOverview(text);
+      setIsLoading(false);
+    };
+    fetchOverview();
+  }, [query]);
+
+  if (!overview && !isLoading) return null;
+
+  return (
+    <motion.div 
+      initial={{ height: 0, opacity: 0 }}
+      animate={{ height: 'auto', opacity: 1 }}
+      className="max-w-4xl mx-auto mb-16 overflow-hidden"
+    >
+      <div className="bg-gradient-to-br from-emerald-50 to-white rounded-[40px] p-8 border border-emerald-100 shadow-xl shadow-emerald-900/5 relative">
+        <div className="absolute top-0 right-0 p-8 opacity-10">
+          <Sparkles size={120} className="text-emerald-600" />
+        </div>
+        <div className="relative z-10">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 bg-emerald-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-emerald-200">
+              <Wand2 size={20} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest">AI Overview</p>
+              <h3 className="text-xl font-bold text-gray-900">Phoenix Logistics Insight</h3>
+            </div>
+          </div>
+          
+          {isLoading ? (
+            <div className="space-y-3">
+              <div className="h-4 bg-emerald-100/50 rounded-full w-full animate-pulse"></div>
+              <div className="h-4 bg-emerald-100/50 rounded-full w-5/6 animate-pulse"></div>
+              <div className="h-4 bg-emerald-100/50 rounded-full w-4/6 animate-pulse"></div>
+            </div>
+          ) : (
+            <div className="text-gray-700 leading-relaxed prose prose-emerald max-w-none prose-sm">
+              <p className="whitespace-pre-wrap">{overview}</p>
+            </div>
+          )}
+          
+          <div className="mt-6 pt-6 border-t border-emerald-100/50 flex items-center justify-between">
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+              <Zap size={12} className="text-emerald-500 fill-current" /> Powered by Gemini
+            </p>
+            <div className="flex items-center gap-4">
+              <button className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest hover:text-emerald-700 transition-colors">Feedback</button>
+              <button className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest hover:text-emerald-700 transition-colors underline underline-offset-4">Learn More</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
   );
 };
 
 const SearchPage = () => {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<any[]>([]);
+  const [queryText, setQueryText] = useState('');
+  const [lastSearch, setLastSearch] = useState('');
+  const [results, setResults] = useState<Merchant[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [minRating, setMinRating] = useState<number>(0);
+  const [maxDeliveryTime, setMaxDeliveryTime] = useState<number>(120);
 
-  const handleSearch = async (e: FormEvent) => {
+  const categories = ['All', ...new Set(demoMerchants.map(m => m.category))];
+
+  const handleSearch = (e: FormEvent) => {
     e.preventDefault();
-    if (!query.trim()) return;
-    
-    setIsSearching(true);
-    // In a real app, this would call a backend API that searches Drive/Files
-    // For now, we simulate finding the project they mentioned
-    setTimeout(() => {
-      if (query.toLowerCase().includes('phoenix')) {
-        setResults([
-          { 
-            id: 'px-1', 
-            name: "Phoenix Express V1 (Mobile)", 
-            type: "Source Code", 
-            location: "Google Drive / Projects", 
-            description: "Initial prototype of the delivery logistics engine built for Eugene, OR region." 
-          },
-          { 
-            id: 'px-2', 
-            name: "Phoenix Express Assets", 
-            type: "Folder", 
-            location: "Google Drive / Design", 
-            description: "High-resolution logos, brand guidelines, and UI mockups for the Phoenix Express mobile app." 
-          }
-        ]);
-      } else {
-        setResults([]);
-      }
-      setIsSearching(false);
-    }, 1500);
+    performSearch();
   };
 
+  const performSearch = (overrideQuery?: string) => {
+    const activeQuery = overrideQuery !== undefined ? overrideQuery : queryText;
+    setIsSearching(true);
+    setLastSearch(activeQuery);
+    
+    setTimeout(() => {
+      const filtered = demoMerchants.filter(merchant => {
+        const matchesQuery = !activeQuery.trim() || 
+          merchant.name.toLowerCase().includes(activeQuery.toLowerCase()) ||
+          merchant.category.toLowerCase().includes(activeQuery.toLowerCase()) ||
+          merchant.description.toLowerCase().includes(activeQuery.toLowerCase());
+        
+        const matchesCategory = selectedCategory === 'All' || merchant.category === selectedCategory;
+        const matchesRating = (merchant.rating || 0) >= minRating;
+        
+        // Parse "15-20 min" to get 20
+        const timeValue = parseInt(merchant.deliveryTime.split('-').pop() || '0');
+        const matchesTime = timeValue <= maxDeliveryTime;
+
+        return matchesQuery && matchesCategory && matchesRating && matchesTime;
+      });
+      setResults(filtered);
+      setIsSearching(false);
+    }, 600);
+  };
+
+  useEffect(() => {
+    if (lastSearch || selectedCategory !== 'All' || minRating > 0 || maxDeliveryTime < 120) {
+      performSearch();
+    } else {
+      setResults([]);
+    }
+  }, [selectedCategory, minRating, maxDeliveryTime]);
+
   return (
-    <div className="pt-24 pb-12 px-4 max-w-4xl mx-auto min-h-screen">
-      <h1 className="text-3xl font-bold mb-8">Asset Search</h1>
-      <form onSubmit={handleSearch} className="mb-12">
+    <div className="pt-24 pb-12 px-4 max-w-7xl mx-auto min-h-screen">
+      <div className="max-w-3xl mx-auto mb-16 text-center">
+        <h1 className="text-4xl lg:text-5xl font-bold mb-6 tracking-tight">Marketplace Search</h1>
+        <p className="text-gray-500 text-lg">Find the best local restaurants and specialized logistics services in Eugene.</p>
+      </div>
+
+      <form onSubmit={handleSearch} className="max-w-2xl mx-auto mb-8">
         <div className="relative group">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-emerald-500 transition-colors" size={24} />
+          <Search className="absolute left-6 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-emerald-500 transition-colors" size={24} />
           <input 
             type="text" 
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search your drive for projects (e.g. 'phoenix express')..." 
-            className="w-full h-16 pl-14 pr-6 bg-white rounded-3xl text-lg text-gray-900 border-2 border-gray-100 focus:border-emerald-500 shadow-xl shadow-gray-100 outline-none transition-all"
+            value={queryText}
+            onChange={(e) => setQueryText(e.target.value)}
+            placeholder="Search for 'sushi', 'logistics', 'heavy hauling'..." 
+            className="w-full h-18 pl-18 pr-6 bg-white rounded-3xl text-lg text-gray-900 border-2 border-gray-100 focus:border-emerald-500 shadow-2xl shadow-emerald-900/5 outline-none transition-all"
           />
+          <button type="submit" className="absolute right-3 top-2.5 bottom-2.5 px-8 bg-emerald-600 text-white rounded-2xl font-bold hover:bg-emerald-500 transition-all shadow-lg active:scale-95">
+            Search
+          </button>
         </div>
       </form>
+
+      <div className="max-w-4xl mx-auto mb-16 space-y-6">
+        <div className="flex flex-wrap items-center gap-4 py-6 px-8 bg-white/50 backdrop-blur-md rounded-[32px] border border-gray-100 shadow-xl shadow-gray-200/20">
+          <div className="flex-1 min-w-[200px]">
+            <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3 ml-1">Category Hub</label>
+            <div className="flex flex-wrap gap-2">
+              {categories.slice(0, 6).map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`px-4 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all border ${
+                    selectedCategory === cat 
+                      ? 'bg-emerald-500 text-white border-emerald-400 shadow-lg shadow-emerald-200' 
+                      : 'bg-white text-gray-500 border-gray-100 hover:border-emerald-200 hover:bg-emerald-50'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="w-px h-12 bg-gray-100 hidden lg:block"></div>
+
+          <div className="w-full sm:w-48">
+            <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3 ml-1 flex items-center gap-2">
+              Min Rating <Star size={10} className="text-amber-400 fill-amber-400" />
+            </label>
+            <select 
+              value={minRating}
+              onChange={(e) => setMinRating(Number(e.target.value))}
+              className="w-full h-11 bg-white border border-gray-100 rounded-xl px-4 text-xs font-bold text-gray-700 focus:outline-none focus:border-emerald-500 transition-all cursor-pointer shadow-sm"
+            >
+              <option value={0}>Any Rating</option>
+              <option value={4}>4.0+ Stars</option>
+              <option value={4.5}>4.5+ Stars</option>
+              <option value={4.8}>Elite (4.8+)</option>
+            </select>
+          </div>
+
+          <div className="w-px h-12 bg-gray-100 hidden lg:block"></div>
+
+          <div className="w-full sm:w-48">
+            <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-3 ml-1 flex items-center gap-2">
+              Max Transit <Clock size={10} className="text-emerald-500" />
+            </label>
+            <select 
+              value={maxDeliveryTime}
+              onChange={(e) => setMaxDeliveryTime(Number(e.target.value))}
+              className="w-full h-11 bg-white border border-gray-100 rounded-xl px-4 text-xs font-bold text-gray-700 focus:outline-none focus:border-emerald-500 transition-all cursor-pointer shadow-sm"
+            >
+              <option value={120}>Any Time</option>
+              <option value={20}>Hyper Speed (20m)</option>
+              <option value={30}>Under 30m</option>
+              <option value={45}>Standard (45m)</option>
+              <option value={60}>Bulk (60m+)</option>
+            </select>
+          </div>
+        </div>
+      </div>
 
       {isSearching ? (
         <div className="flex flex-col items-center justify-center py-20 gap-4">
@@ -1386,61 +2066,62 @@ const SearchPage = () => {
             transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
             className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full"
           />
-          <p className="text-gray-500 font-medium animate-pulse">Searching your connected accounts...</p>
+          <p className="text-gray-500 font-medium animate-pulse">Scanning the Phoenix Network...</p>
         </div>
       ) : results.length > 0 ? (
-        <div className="space-y-4">
-          <p className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-6">Results from your Drive</p>
-          {results.map((res, idx) => (
-            <motion.div 
-              key={res.id}
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: idx * 0.1 }}
-              className="bg-white p-6 rounded-3xl border border-gray-100 hover:border-emerald-200 transition-all shadow-sm hover:shadow-lg flex items-start gap-4 group"
-            >
-              <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center text-emerald-600 group-hover:bg-emerald-500 group-hover:text-white transition-colors">
-                <Package size={24} />
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center justify-between mb-1">
-                  <h3 className="font-bold text-gray-900">{res.name}</h3>
-                  <span className="text-[10px] font-bold uppercase tracking-wider bg-gray-100 text-gray-600 px-2 py-1 rounded-md">{res.type}</span>
-                </div>
-                <p className="text-sm text-gray-500 mb-2">{res.description}</p>
-                <div className="flex items-center gap-1 text-xs text-emerald-600 font-bold bg-emerald-50 w-fit px-2 py-1 rounded-full cursor-pointer hover:bg-emerald-100">
-                  <MapPin size={12} />
-                  {res.location}
-                </div>
-              </div>
-            </motion.div>
-          ))}
-        </div>
-      ) : query && !isSearching ? (
-        <div className="text-center py-20 px-8 bg-gray-50 rounded-[40px] border-2 border-dashed border-gray-100">
-          <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm">
-            <Search className="text-gray-300" size={32} />
+        <>
+          <AIOverview query={lastSearch} results={results} />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+            {results.map((merchant, idx) => (
+              <MerchantCard key={merchant.id} merchant={merchant} idx={idx} />
+            ))}
           </div>
-          <h3 className="text-xl font-bold mb-2 text-gray-900">No projects found</h3>
-          <p className="text-gray-500 text-sm max-w-xs mx-auto">We couldn't find any assets matching "{query}" in your connected drive.</p>
+        </>
+      ) : queryText && !isSearching ? (
+        <div className="text-center py-20 px-8 bg-gray-50 rounded-[48px] border-2 border-dashed border-gray-100 max-w-2xl mx-auto">
+          <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-sm">
+            <Search className="text-gray-300" size={40} />
+          </div>
+          <h3 className="text-2xl font-bold mb-4 text-gray-900">No matches found</h3>
+          <p className="text-gray-500 text-lg leading-relaxed">
+            We couldn't find any partners matching "{queryText}". Try searching for categories like "Food", "Logistics", or "Aggregate".
+          </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 opacity-60 grayscale hover:grayscale-0 transition-all duration-700">
-           <div className="p-8 bg-emerald-50 rounded-3xl border border-emerald-100">
-              <h4 className="font-bold text-emerald-900 mb-2">Connected Drive</h4>
-              <p className="text-sm text-emerald-800">Your Google Drive is linked. Searching for 'phoenix' will crawl your project folders.</p>
-           </div>
-           <div className="p-8 bg-gray-50 rounded-3xl border border-gray-100">
-              <h4 className="font-bold text-gray-900 mb-2">Build History</h4>
-              <p className="text-sm text-gray-600">Quickly find and import assets from your previous delivery app prototypes.</p>
-           </div>
+        <div>
+          <h2 className="text-xl font-bold mb-8 text-gray-900 flex items-center gap-2">
+            Suggested Categories <Zap size={20} className="text-emerald-500 fill-current" />
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+            {['Logistics', 'Food', 'Sushi', 'Construction', 'Heavy Hauling', 'Delivery'].map((cat) => (
+              <button 
+                key={cat}
+                onClick={() => {
+                  setQueryText(cat);
+                  performSearch(cat);
+                }}
+                className="p-6 bg-white border border-gray-100 rounded-3xl text-sm font-bold text-gray-600 hover:border-emerald-500 hover:text-emerald-600 transition-all text-center shadow-sm hover:shadow-lg"
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-20">
+            <h2 className="text-xl font-bold mb-8 text-gray-900">All Partners</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+              {demoMerchants.map((merchant, idx) => (
+                <MerchantCard key={merchant.id} merchant={merchant} idx={idx} />
+              ))}
+            </div>
+          </div>
         </div>
       )}
     </div>
   );
 };
 
-const MerchantPage = ({ user }: { user: any }) => {
+const MerchantPage = ({ user, addToCart }: { user: any, addToCart: (item: MenuItem, merchantId: string) => void }) => {
   const { id } = useParams();
   const [merchant, setMerchant] = useState<Merchant | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -1540,10 +2221,39 @@ const MerchantPage = ({ user }: { user: any }) => {
       <div className="max-w-7xl mx-auto px-4 mt-12 grid grid-cols-1 lg:grid-cols-3 gap-12">
         <div className="lg:col-span-2">
           <h2 className="text-2xl font-bold mb-6">Menu Items</h2>
-          <div className="bg-gray-50 p-8 rounded-3xl text-center border-2 border-dashed border-gray-200">
-            <Package size={48} className="mx-auto text-gray-300 mb-4" />
-            <p className="text-gray-500">Menu for {merchant.name} has not been uploaded yet.</p>
-          </div>
+          {merchant.menu && merchant.menu.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {merchant.menu.map((item) => (
+                <motion.div 
+                  key={item.id}
+                  whileHover={{ y: -4 }}
+                  className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm flex gap-4 items-center group cursor-pointer"
+                >
+                  <div className="w-20 h-20 rounded-xl overflow-hidden flex-shrink-0">
+                    <img src={item.image} alt={item.name} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h4 className="font-bold text-gray-900 truncate">{item.name}</h4>
+                    <p className="text-[10px] text-gray-500 line-clamp-1 mb-2">{item.description}</p>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-black text-emerald-600">${item.price.toFixed(2)}</span>
+                      <button 
+                        onClick={() => addToCart(item, merchant.id)}
+                        className="p-1.5 bg-gray-50 rounded-lg text-gray-400 group-hover:bg-emerald-500 group-hover:text-white transition-all active:scale-95"
+                      >
+                        <ShoppingCart size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          ) : (
+            <div className="bg-gray-50 p-8 rounded-3xl text-center border-2 border-dashed border-gray-200">
+              <Package size={48} className="mx-auto text-gray-300 mb-4" />
+              <p className="text-gray-500">Menu for {merchant.name} has not been uploaded yet.</p>
+            </div>
+          )}
 
           <div className="mt-16">
             <h2 className="text-2xl font-bold mb-8">Customer Reviews</h2>
@@ -1620,10 +2330,72 @@ const MerchantPage = ({ user }: { user: any }) => {
 };
 
 const demoMerchants: Merchant[] = [
-  { id: '1', name: "Urban Greens", category: "Groceries", rating: 4.8, deliveryTime: "15-25 min", image: "https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&q=80&w=800", description: "Fresh organic produce delivered from local farms." },
-  { id: '2', name: "Sushi Sensation", category: "Japanese", rating: 4.9, deliveryTime: "20-35 min", image: "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?auto=format&fit=crop&q=80&w=800", description: "Premium handcrafted sushi and sashimi." },
-  { id: '3', name: "The Burger Co.", category: "American", rating: 4.7, deliveryTime: "10-20 min", image: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&q=80&w=800", description: "Gourmet wagyu burgers and artisanal fries." },
-  { id: '4', name: "Aroma Cafe", category: "Coffee", rating: 4.6, deliveryTime: "5-15 min", image: "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&q=80&w=800", description: "Single-origin coffee and freshly baked pastries." },
+  { 
+    id: '1', 
+    name: "Market of Choice", 
+    category: "Groceries", 
+    rating: 4.9, 
+    deliveryTime: "15-20 min", 
+    image: "https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&q=80&w=800", 
+    description: "Eugene's premier local grocery. Organic, fresh, and community-driven.",
+    coords: { lat: 44.0255, lng: -123.0911 },
+    menu: [
+      { id: 'm1', name: "Local Wagyu Ribeye", price: 28.50, description: "Grass-fed beef from Willamette Valley farms.", image: "https://images.unsplash.com/photo-1546248136-3d29cb94697c?auto=format&fit=crop&q=80&w=400" },
+      { id: 'm2', name: "Artisanal Sourdough", price: 8.00, description: "Baked fresh daily in the Market bakery.", image: "https://images.unsplash.com/photo-1585478259715-876a6a81fc08?auto=format&fit=crop&q=80&w=400" }
+    ]
+  },
+  { 
+    id: '2', 
+    name: "Jerry's Home Improvement", 
+    category: "DIY & Hardware", 
+    rating: 4.8, 
+    deliveryTime: "30-45 min", 
+    image: "https://images.unsplash.com/photo-1581141849291-1125c7b692b5?auto=format&fit=crop&q=80&w=800", 
+    description: "Eugene & Springfield's building material giant.",
+    coords: { lat: 44.1167, lng: -123.1611 },
+    menu: [
+      { id: 'm3', name: "Contractor Toolkit", price: 189.00, description: "Essential tools for any home project.", image: "https://images.unsplash.com/photo-1530124560676-4ce52bc0325d?auto=format&fit=crop&q=80&w=400" }
+    ]
+  },
+  { 
+    id: '3', 
+    name: "Sherm's Thunderbird", 
+    category: "Groceries", 
+    rating: 4.7, 
+    deliveryTime: "25-40 min", 
+    image: "https://images.unsplash.com/photo-1534723452862-4c874018d66d?auto=format&fit=crop&q=80&w=800", 
+    description: "Roseburg's trusted location for massive selection and savings.",
+    coords: { lat: 43.1979, lng: -123.3639 },
+    menu: [
+      { id: 'm4', name: "Family Pack Poultry", price: 22.00, description: "Fresh cuts for Roseburg families.", image: "https://images.unsplash.com/photo-1587593810167-a84920ea0781?auto=format&fit=crop&q=80&w=400" }
+    ]
+  },
+  { 
+    id: '4', 
+    name: "Bi-Mart", 
+    category: "Membership Discount", 
+    rating: 4.6, 
+    deliveryTime: "20-30 min", 
+    image: "https://images.unsplash.com/photo-1604719312563-8912e9223c6a?auto=format&fit=crop&q=80&w=800", 
+    description: "Northwest membership discount stores. Eugene founded.",
+    coords: { lat: 44.0888, lng: -123.1259 },
+    menu: [
+      { id: 'm5', name: "Northwest Camping Set", price: 145.00, description: "Durable gear for the Oregon wilderness.", image: "https://images.unsplash.com/photo-1536431311719-398b6704d4cc?auto=format&fit=crop&q=80&w=400" }
+    ]
+  },
+  { 
+    id: '5', 
+    name: "Coastal Farm & Ranch", 
+    category: "Farm Supplies", 
+    rating: 4.8, 
+    deliveryTime: "40-60 min", 
+    image: "https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&q=80&w=800", 
+    description: "Roseburg's destination for the northwest lifestyle.",
+    coords: { lat: 43.2173, lng: -123.3417 },
+    menu: [
+      { id: 'm6', name: "Winter Fleece Jacket", price: 89.00, description: "Classic Oregon outdoor wear.", image: "https://images.unsplash.com/photo-1544022613-e87ef7557424?auto=format&fit=crop&q=80&w=400" }
+    ]
+  }
 ];
 
 interface BusinessPledge {
@@ -1736,7 +2508,7 @@ const MomentsWall = ({ user }: { user: any }) => {
         </div>
         <button 
           onClick={() => setIsCapturing(true)}
-          className="flex items-center gap-2 px-8 py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 transition-all shadow-xl active:scale-95"
+          className="flex items-center gap-2 px-8 py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 hover:scale-105 transition-all shadow-xl active:scale-95"
         >
           <Camera size={20} /> Share a Moment
         </button>
@@ -1922,18 +2694,37 @@ const NeighborhoodMakeover = ({ user }: { user: any }) => {
   };
 
   return (
-    <div className="mt-24 space-y-12">
-      <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-        <div>
-          <h2 className="text-3xl font-bold tracking-tight mb-2">Neighborhood Makeover Election</h2>
-          <p className="text-gray-500">Nominate a neighbor for a $1,000 full-service home cleanup (windows, landscaping, trash removal).</p>
+    <div className="mt-32 space-y-12">
+      <div className="relative rounded-[48px] overflow-hidden p-8 lg:p-12 mb-12">
+        <div className="absolute inset-0">
+          <img 
+            src="https://artifact.m68.us/api/v1/artifacts/2074e508-30cd-498c-8f1e-f3f8864ad19e" 
+            alt="Community Service" 
+            className="w-full h-full object-cover"
+            referrerPolicy="no-referrer"
+          />
+          <div className="absolute inset-0 bg-gradient-to-r from-white via-white/80 to-white/20"></div>
         </div>
-        <button 
-          onClick={() => setIsNominating(true)}
-          className="flex items-center gap-2 px-8 py-4 bg-orange-600 text-white rounded-2xl font-bold hover:bg-orange-700 transition-all shadow-xl active:scale-95"
-        >
-          <Star size={20} /> Nominate a Neighbor
-        </button>
+        
+        <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="max-w-2xl">
+            <div className="flex items-center gap-4 mb-4">
+              <div className="flex -space-x-3">
+                 <img src="https://artifact.m68.us/api/v1/artifacts/42337775-69f8-41df-a55d-ea48a4da4599" className="w-10 h-10 rounded-full border-2 border-white object-cover" referrerPolicy="no-referrer" />
+                 <div className="w-10 h-10 rounded-full border-2 border-white bg-orange-100 flex items-center justify-center text-[10px] font-bold text-orange-600">+12</div>
+              </div>
+              <p className="text-xs font-bold text-orange-600 uppercase tracking-widest">Recent Community Impact</p>
+            </div>
+            <h2 className="text-4xl lg:text-5xl font-bold tracking-tight mb-4 text-gray-900">Neighborhood Makeover Election</h2>
+            <p className="text-gray-600 text-lg font-medium">Nominate a neighbor for a $1,000 full-service home cleanup (windows, landscaping, trash removal).</p>
+          </div>
+          <button 
+            onClick={() => setIsNominating(true)}
+            className="flex items-center gap-3 px-10 py-5 bg-orange-600 text-white rounded-3xl font-bold hover:bg-orange-700 hover:scale-105 transition-all shadow-2xl shadow-orange-200 active:scale-95 whitespace-nowrap"
+          >
+            <Star size={24} className="fill-current" /> Nominate a Neighbor
+          </button>
+        </div>
       </div>
 
       <AnimatePresence>
@@ -2031,28 +2822,31 @@ const NeighborhoodMakeover = ({ user }: { user: any }) => {
             <p className="text-gray-600 leading-relaxed italic mb-8">"{nomination.reason}"</p>
 
             <div className="flex items-center justify-between border-t border-gray-50 pt-6">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center font-bold text-[10px]">
-                  {nomination.nominatorName.charAt(0)}
+              <div className="flex items-center gap-3">
+                <div className="group relative">
+                  <div className="absolute -inset-1 bg-emerald-500 rounded-full blur opacity-25 group-hover:opacity-100 transition duration-1000 group-hover:duration-200"></div>
+                  <div className="relative w-10 h-10 bg-white border border-gray-100 text-emerald-600 rounded-full flex items-center justify-center font-black text-xs shadow-sm">
+                    {nomination.nominatorName.charAt(0)}
+                  </div>
                 </div>
                 <div>
-                  <p className="text-[10px] font-bold text-gray-400 tracking-widest uppercase">Nominated by</p>
-                  <p className="text-xs font-bold text-gray-900">{nomination.nominatorName}</p>
+                  <p className="text-[9px] font-black text-emerald-500 tracking-[0.2em] uppercase">Fleet Entry By</p>
+                  <p className="text-sm font-bold text-gray-900">{nomination.nominatorName}</p>
                 </div>
               </div>
               <button 
                 onClick={() => handleVote(nomination.id, nomination.votes)}
                 disabled={!user || nomination.votes.includes(user.uid)}
-                className={`flex items-center gap-2 px-6 py-3 rounded-xl font-bold transition-all ${
+                className={`flex items-center gap-2 px-7 py-3 rounded-2xl font-bold transition-all hover:scale-105 active:scale-95 shadow-lg ${
                   user && nomination.votes.includes(user.uid)
-                    ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
-                    : 'bg-gray-900 text-white hover:bg-gray-800'
+                    ? 'bg-emerald-50 text-emerald-600 border border-emerald-100 shadow-none'
+                    : 'bg-emerald-600 text-white hover:bg-emerald-500 shadow-emerald-200'
                 } disabled:opacity-50`}
               >
                 {user && nomination.votes.includes(user.uid) ? (
                   <> <CheckCircle2 size={16} /> Endorsed</>
                 ) : (
-                  <> <Heart size={16} /> Endorse</>
+                  <> <Zap size={16} className="fill-current" /> Endorse</>
                 )}
               </button>
             </div>
@@ -2063,7 +2857,273 @@ const NeighborhoodMakeover = ({ user }: { user: any }) => {
   );
 };
 
+interface RewardItem {
+  id: string;
+  title: string;
+  description: string;
+  cost: number;
+  icon: React.ReactNode;
+  category: 'fleet' | 'merchant' | 'status';
+}
+
+const MusicPlayer = ({ startSignal, user }: { startSignal: boolean; user: any }) => {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [volume, setVolume] = useState(0.5);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    // If user interacts or logs in, we can try to start
+    if ((startSignal || user) && !isPlaying) {
+      setIsPlaying(true);
+    }
+  }, [startSignal, user]);
+
+  useEffect(() => {
+    if (isPlaying && audioRef.current) {
+      audioRef.current.play().catch(err => {
+        console.log("Autoplay blocked, waiting for interaction", err);
+        setIsPlaying(false);
+      });
+    } else if (audioRef.current) {
+      audioRef.current.pause();
+    }
+  }, [isPlaying]);
+
+  return (
+    <div className="fixed bottom-6 left-6 z-[60] flex items-center gap-4 bg-gray-950/90 backdrop-blur-2xl px-5 py-3 rounded-2xl border border-white/10 shadow-2xl ring-1 ring-white/5">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 bg-emerald-500/10 rounded-xl flex items-center justify-center relative overflow-hidden group">
+          <div className="absolute inset-0 bg-emerald-500 opacity-20 animate-pulse"></div>
+          <Zap size={20} className="text-emerald-400 relative z-10" />
+        </div>
+        <div className="flex flex-col">
+          <p className="text-[8px] font-black text-emerald-400 uppercase tracking-widest">LIVE BAND SIGNAL</p>
+          <div className="flex items-center gap-1.5">
+            <div className="flex gap-0.5">
+              {[1,2,3].map(i => <div key={i} className={`w-0.5 h-2 bg-emerald-500/50 rounded-full animate-bounce`} style={{ animationDelay: `${i*0.1}s` }} />)}
+            </div>
+            <p className="text-[10px] font-bold text-white truncate max-w-[120px]">FRANK AND BEANS</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-4 border-l border-white/10 pl-6">
+        <button 
+          onClick={() => setIsPlaying(!isPlaying)}
+          className="w-12 h-12 bg-white text-gray-900 rounded-full flex items-center justify-center hover:scale-110 active:scale-95 transition-all shadow-xl shadow-white/5"
+        >
+          {isPlaying ? <X size={24} /> : <Zap size={24} className="fill-current" />}
+        </button>
+        <div className="flex items-center gap-2">
+          <Flame size={14} className="text-orange-500" />
+          <input 
+            type="range" 
+            min="0" 
+            max="1" 
+            step="0.1" 
+            value={volume} 
+            onChange={(e) => {
+              const val = parseFloat(e.target.value);
+              setVolume(val);
+              if (audioRef.current) audioRef.current.volume = val;
+            }}
+            className="w-16 accent-emerald-500"
+          />
+        </div>
+      </div>
+      {/* Name In Blood - Black Label Society (Official high energy stream) */}
+      <audio 
+        ref={audioRef} 
+        src="https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3" // Replacing with fastest metal-style placeholder
+        loop 
+      />
+      {/* Hidden YouTube player for the real Name In Blood experience if possible */}
+      <div className="hidden">
+        {isPlaying && (
+          <iframe 
+            width="1" 
+            height="1" 
+            src={`https://www.youtube.com/embed/5m_hR186hK8?autoplay=1&mute=0`} 
+            allow="autoplay"
+          ></iframe>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const PhoenixArcade = ({ onEarnPoints }: { onEarnPoints: (amount: number) => void }) => {
+  const [activeGame, setActiveGame] = useState<string | null>(null);
+
+  const games = [
+    { 
+      id: 'god-logistics', 
+      title: 'God of Logistics', 
+      icon: <Target size={32} />, 
+      color: 'bg-red-700', 
+      payout: 250, 
+      img: 'https://images.unsplash.com/photo-1612287230202-1ff1d85d1bdf?auto=format&fit=crop&q=80&w=600' 
+    },
+    { 
+      id: 'gt-courier', 
+      title: 'GT Courier Pro', 
+      icon: <Car size={32} />, 
+      color: 'bg-blue-700', 
+      payout: 200, 
+      img: 'https://images.unsplash.com/photo-1594739433321-2f7411a003fd?auto=format&fit=crop&q=80&w=600'
+    },
+    { 
+      id: 'horizon-cargo', 
+      title: 'Horizon Cargo', 
+      icon: <Bird size={32} />, 
+      color: 'bg-orange-600', 
+      payout: 300, 
+      isPremium: true,
+      img: 'https://images.unsplash.com/photo-1627389981847-cf4fca168748?auto=format&fit=crop&q=80&w=600' 
+    },
+  ];
+
+  const handlePlay = (id: string) => {
+    setActiveGame(id);
+    setTimeout(() => {
+      const payout = games.find(g => g.id === id)?.payout || 0;
+      onEarnPoints(payout);
+      setActiveGame(null);
+      alert(`Session Complete! ${payout} XP added to your community pulse.`);
+    }, 4000);
+  };
+
+  return (
+    <div className="mt-32 max-w-7xl mx-auto px-4">
+      <div className="flex flex-col md:flex-row md:items-end justify-between mb-16 gap-8">
+        <div className="max-w-2xl">
+          <div className="inline-flex items-center gap-3 px-5 py-2 bg-emerald-500/10 rounded-full text-[10px] font-black text-emerald-400 uppercase tracking-[0.3em] border border-emerald-500/20 mb-8">
+            <Zap size={14} className="fill-current" /> Operational Simulator
+          </div>
+          <h2 className="text-5xl lg:text-8xl font-black tracking-tighter mb-6 text-white italic leading-none">PLAY STATION.</h2>
+          <p className="text-gray-400 text-lg font-medium leading-relaxed">Simulate critical load-out paths. High-performance operators earn direct Hub Credits convertible at local Eugene/Roseburg nodes.</p>
+        </div>
+        <div className="bg-white/5 backdrop-blur-3xl p-10 rounded-[48px] border border-white/10 shadow-2xl">
+          <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-2">Network Yield</p>
+          <p className="text-3xl font-black text-white italic tracking-tighter">1000 XP = <span className="text-emerald-500">$10.00 REBATE</span></p>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-12">
+        {games.map((game) => (
+          <motion.div 
+            key={game.id}
+            whileHover={{ y: -16 }}
+            className="group relative bg-gray-950 rounded-[64px] overflow-hidden border border-white/5 hover:border-emerald-500/30 transition-all flex flex-col"
+          >
+            <div className="relative aspect-[3/4] overflow-hidden">
+              <img src={game.img} alt={game.title} className="w-full h-full object-cover transition-all duration-1000 group-hover:scale-110 opacity-40 group-hover:opacity-100" referrerPolicy="no-referrer" />
+              <div className="absolute inset-0 bg-gradient-to-t from-gray-950 via-gray-950/20 to-transparent"></div>
+              
+              {game.isPremium && (
+                <div className="absolute top-8 right-8 px-5 py-2 bg-emerald-500 text-gray-950 text-[10px] font-black rounded-full shadow-2xl">
+                  ELITE GRADE
+                </div>
+              )}
+              
+              <div className="absolute bottom-10 left-10 flex items-center gap-5">
+                <div className={`w-14 h-14 ${game.color} text-white rounded-2xl flex items-center justify-center shadow-2xl group-hover:rotate-6 transition-transform`}>
+                  {React.cloneElement(game.icon as React.ReactElement, { size: 28 })}
+                </div>
+                <p className="font-black text-white text-3xl italic tracking-tighter uppercase">{game.title}</p>
+              </div>
+            </div>
+            
+            <div className="p-12 flex-1 flex flex-col bg-gray-950/80 backdrop-blur-3xl border-t border-white/5">
+              <div className="flex items-center justify-between mb-10">
+                <div>
+                  <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest mb-1">Operational Yield</p>
+                  <p className="text-3xl font-black text-white italic tracking-tighter">{game.payout} XP</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Hub Value</p>
+                  <p className="text-lg font-black text-gray-400 tracking-tighter">~ ${(game.payout/100).toFixed(2)}</p>
+                </div>
+              </div>
+              
+              <button 
+                onClick={() => handlePlay(game.id)}
+                disabled={!!activeGame}
+                className="w-full h-18 bg-white text-gray-950 rounded-[32px] font-black text-[12px] uppercase tracking-[0.3em] hover:bg-emerald-500 hover:text-white transition-all flex items-center justify-center gap-3 active:scale-95 disabled:opacity-30 mt-auto shadow-2xl shadow-emerald-950/20"
+              >
+                {activeGame === game.id ? (
+                  <div className="flex gap-1.5">
+                    {[1,2,3].map(i => <div key={i} className="w-2 h-2 bg-current rounded-full animate-bounce" style={{ animationDelay: `${i*0.1}s` }} />)}
+                  </div>
+                ) : (
+                  <>INITIALIZE CORE <ChevronRight size={20} /></>
+                )}
+              </button>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+
+const RewardsStore = ({ currentPoints, onRedeem }: { currentPoints: number; onRedeem: (cost: number) => void }) => {
+  const rewards: RewardItem[] = [
+    { id: '1', title: 'Priority Dispatch', description: 'Jump to the front of any delivery queue for 24 hours.', cost: 500, icon: <Zap className="text-emerald-500" />, category: 'fleet' },
+    { id: '2', title: '$10 Local Voucher', description: 'Redeemable at Urban Greens or Sushi Sensation.', cost: 1000, icon: <Ticket className="text-orange-500" />, category: 'merchant' },
+    { id: '3', title: 'Route Legend Badge', description: 'Permanent profile badge + unique map marker color.', cost: 2500, icon: <Star className="text-blue-500" />, category: 'status' },
+    { id: '4', title: 'Zero Fee Week', description: 'Pay zero delivery fees on all orders for 7 days.', cost: 1500, icon: <DollarSign className="text-emerald-600" />, category: 'fleet' },
+  ];
+
+  return (
+    <div id="rewards-section" className="mt-32 space-y-12 pb-24 border-t border-gray-50 pt-32">
+      <div className="text-center max-w-2xl mx-auto">
+        <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-100/50 rounded-full text-xs font-bold text-emerald-600 uppercase tracking-widest border border-emerald-200 mb-6">
+          <Zap size={14} className="fill-current" /> Rewards Hub
+        </div>
+        <h2 className="text-4xl font-bold tracking-tight mb-4">Redeem Your XP</h2>
+        <p className="text-gray-500">Your community activity translates into real impact and exclusive logistics perks.</p>
+      </div>
+
+      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {rewards.map((reward) => (
+          <motion.div 
+            key={reward.id}
+            whileHover={{ y: -8 }}
+            className="bg-white p-8 rounded-[40px] border border-gray-100 shadow-sm hover:shadow-2xl transition-all flex flex-col h-full"
+          >
+            <div className="w-14 h-14 bg-gray-50 rounded-2xl flex items-center justify-center mb-6">
+              {reward.icon}
+            </div>
+            <h3 className="text-xl font-bold mb-2">{reward.title}</h3>
+            <p className="text-gray-500 text-sm mb-8 flex-1">{reward.description}</p>
+            
+            <div className="flex items-center justify-between pt-6 border-t border-gray-50">
+              <div className="text-lg font-black text-gray-900">
+                {reward.cost} <span className="text-xs font-bold text-emerald-500">XP</span>
+              </div>
+              <button 
+                onClick={() => onRedeem(reward.cost)}
+                disabled={currentPoints < reward.cost}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                  currentPoints >= reward.cost 
+                    ? 'bg-gray-900 text-white hover:bg-black active:scale-95 shadow-lg' 
+                    : 'bg-gray-100 text-gray-400 cursor-not-allowed shadow-none'
+                }`}
+              >
+                {currentPoints >= reward.cost ? 'Redeem' : 'Insufficient'}
+              </button>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const CommunityImpactHub = ({ user }: { user: any }) => {
+  const [points, setPoints] = useState(1240);
   const [pledges, setPledges] = useState<BusinessPledge[]>([]);
   const [formData, setFormData] = useState({
     businessName: '',
@@ -2165,7 +3225,7 @@ const CommunityImpactHub = ({ user }: { user: any }) => {
             <button 
               type="submit"
               disabled={isSubmitting}
-              className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-bold hover:bg-emerald-500 transition-all shadow-xl shadow-emerald-900/20 active:scale-95 disabled:opacity-50"
+              className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-bold hover:bg-emerald-500 hover:scale-[1.02] transition-all shadow-xl shadow-emerald-900/20 active:scale-95 disabled:opacity-50"
             >
               {isSubmitting ? "Submitting..." : "Submit Pledge"}
             </button>
@@ -2219,25 +3279,144 @@ const CommunityImpactHub = ({ user }: { user: any }) => {
 
       <NeighborhoodMakeover user={user} />
 
+      {/* Daily Community Challenge - Interaction retention loop */}
+      <section className="px-4 max-w-7xl mx-auto my-24">
+        <div className="bg-orange-50 rounded-[48px] p-8 lg:p-12 border border-orange-100 flex flex-col lg:flex-row items-center gap-12 relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-64 h-64 bg-orange-200/30 rounded-full blur-3xl -mr-32 -mt-32"></div>
+          <div className="relative z-10 lg:w-1/2">
+            <div className="inline-flex items-center gap-2 px-3 py-1 bg-orange-600 text-white rounded-full text-[10px] font-bold uppercase tracking-widest mb-6">
+              <Star size={12} className="fill-current" /> Daily Hero Challenge
+            </div>
+            <h2 className="text-3xl lg:text-5xl font-bold mb-6 tracking-tight text-gray-900">Endorse 3 Neighbors <span className="text-orange-600 italic">Today.</span></h2>
+            <p className="text-gray-600 text-lg mb-8 leading-relaxed">
+              Help us reach our weekly neighborhood goal. Complete your first 3 endorsements today to earn <b>500 bonus Phoenix Points</b> and a "Neighborhood Hero" badge.
+            </p>
+            <div className="flex items-center gap-4">
+               <div className="flex-1 h-3 bg-white rounded-full overflow-hidden border border-orange-200">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: '66%' }}
+                    className="h-full bg-orange-500"
+                  />
+               </div>
+               <span className="text-sm font-bold text-orange-600">2/3 Done</span>
+            </div>
+          </div>
+          <div className="lg:w-1/2 grid grid-cols-2 gap-4">
+             <div className="bg-white p-6 rounded-3xl shadow-xl shadow-orange-900/5 border border-orange-50">
+               <p className="text-3xl font-black text-gray-900 mb-1">+500</p>
+               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Points Reward</p>
+             </div>
+             <div className="bg-orange-600 p-6 rounded-3xl shadow-xl shadow-orange-900/20 text-white">
+               <p className="text-3xl font-black mb-1">12h</p>
+               <p className="text-[10px] font-bold text-orange-200 uppercase tracking-widest">Time Remaining</p>
+             </div>
+          </div>
+        </div>
+      </section>
+
       <MomentsWall user={user} />
+      
+      <PhoenixArcade onEarnPoints={(amount) => setPoints(prev => prev + amount)} />
+
+      <RewardsStore 
+        currentPoints={points} 
+        onRedeem={(cost) => {
+          if (points >= cost) {
+            setPoints(prev => prev - cost);
+            alert("Reward Redeemed! Check your email for verification.");
+          }
+        }} 
+      />
 
       {/* Band Giveaway Section */}
-      <div className="mt-24 bg-gray-900 rounded-[48px] p-8 lg:p-16 text-white relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl -mr-48 -mt-48"></div>
+      <div id="band-section" className="mt-24 bg-gray-900 rounded-[64px] p-8 lg:p-16 text-white relative overflow-hidden ring-1 ring-white/10">
+        <div className="absolute inset-0">
+          <img 
+            src="https://artifact.m68.us/api/v1/artifacts/17b9bdfb-ba85-48b2-8f19-0be4061a52cd"
+            alt="Phoenix Sessions"
+            className="w-full h-full object-cover opacity-30"
+            referrerPolicy="no-referrer"
+          />
+          <div className="absolute inset-0 bg-gradient-to-br from-gray-900 via-gray-900/80 to-emerald-900/40"></div>
+        </div>
         <div className="relative z-10 grid lg:grid-cols-2 gap-12 items-center">
           <div>
             <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/10 rounded-full text-[10px] font-bold uppercase tracking-widest mb-6">
-              <Flame size={12} className="text-orange-400" /> Musicians Exclusive
+              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span> Live Check-in
             </div>
-            <h2 className="text-3xl lg:text-5xl font-bold mb-6 tracking-tight">Trailer Giveaway for <span className="text-emerald-400">Local Bands.</span></h2>
+            <h2 className="text-4xl lg:text-6xl font-bold mb-6 tracking-tight leading-tight">Eugene Tour <span className="text-emerald-400 font-mono italic">Live Signal.</span></h2>
             <p className="text-gray-400 text-lg mb-8 leading-relaxed">
-              We know the struggle of hauling gear to gigs. We're giving away a free <b>5x8 enclosed trailer</b> to one lucky Eugene-area band. Register your band details today and stay tuned for the live drawing.
+              We're tracking "Frank and Beans" and other local legends as they carry the signal across the valley. Enter your info below to stay updated on the next pop-up gig and community session.
             </p>
-            <div className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/10">
-              <div className="w-12 h-12 bg-emerald-600 rounded-xl flex items-center justify-center font-bold">5x8</div>
-              <div>
-                <p className="font-bold">Heavy-Duty Cargo Trailer</p>
-                <p className="text-xs text-gray-400">Custom Phoenix Wrap included</p>
+            <div className="flex flex-wrap gap-4">
+              <div className="flex-1 min-w-[200px] p-6 bg-white/5 backdrop-blur-xl rounded-[32px] border border-white/10 flex items-center gap-4 transition-transform hover:scale-105">
+                <div className="w-12 h-12 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                  <MapPin size={24} className="text-white" />
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Base Camp</p>
+                  <p className="text-xl font-bold">Eugene, OR</p>
+                </div>
+              </div>
+              <div className="flex-1 min-w-[200px] p-6 bg-white/5 backdrop-blur-xl rounded-[32px] border border-white/10 flex items-center gap-4 transition-transform hover:scale-105">
+                <div className="w-12 h-12 bg-gray-900 rounded-2xl border border-white/10 flex items-center justify-center overflow-hidden">
+                  <img src="https://artifact.m68.us/api/v1/artifacts/48902506-69d6-444a-9bd1-a9018424269e" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Stage Status</p>
+                  <p className="text-xl font-bold">Frank and Beans</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Phoenix Express Fleet Signal - Local Tracking */}
+            <div className="mt-12 p-8 bg-emerald-950/20 backdrop-blur-3xl rounded-[40px] border border-white/10 relative overflow-hidden group">
+              <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent"></div>
+              
+              <div className="relative z-10">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-500/20">
+                      <Navigation size={24} className="text-white animate-pulse" />
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.2em]">Signal Lock: Active</p>
+                      <h4 className="text-xl font-bold">Frank and Beans Tracker</h4>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 px-4 py-2 bg-emerald-500/20 rounded-full border border-emerald-500/30">
+                    <div className="w-2 h-2 bg-emerald-400 rounded-full animate-ping"></div>
+                    <span className="text-[10px] font-bold text-emerald-400 uppercase">Live Relays: Active</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+                  <div className="h-48 rounded-2xl overflow-hidden border border-white/10 relative">
+                    <MapContainer center={[44.0448, -123.0726]} zoom={14} className="w-full h-full z-10" zoomControl={false}>
+                      <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                      <Marker position={[44.0448, -123.0726]}>
+                        <Popup>Frank and Beans - Near Hayward Field</Popup>
+                      </Marker>
+                    </MapContainer>
+                  </div>
+                  <div className="p-6 bg-white/5 rounded-3xl border border-white/10 backdrop-blur-md">
+                    <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest mb-2">Origin Point</p>
+                    <p className="text-2xl font-black text-white flex items-center gap-2">
+                       <MapPin className="text-emerald-500" /> Near Hayward Field
+                    </p>
+                    <div className="mt-6 flex gap-2">
+                      {[1,2,3,4,5,6,7,8,9,10].map(i => (
+                        <motion.div 
+                          key={i}
+                          animate={{ height: [8, 16, 8] }}
+                          transition={{ repeat: Infinity, duration: 1, delay: i * 0.1 }}
+                          className={`w-1 rounded-full ${i <= 7 ? 'bg-emerald-500' : 'bg-white/10'}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -2283,177 +3462,259 @@ const CommunityImpactHub = ({ user }: { user: any }) => {
   );
 };
 
-const Home = () => {
+const LiveTourTracker = () => {
+  const tours = [
+    { band: 'Metallica', location: 'Prague, CZ', status: 'En Route', eta: '3.5h', icon: <Bird className="text-emerald-400" /> },
+    { band: 'Black Label Society', location: 'Portland, OR', status: 'Soundcheck', eta: 'LIVE', icon: <Target className="text-emerald-400" /> },
+    { band: 'Tool', location: 'Eugene, OR', status: 'Arrived', eta: 'READY', icon: <Zap className="text-emerald-400" /> },
+  ];
+
   return (
-    <div className="pt-20 pb-12">
-      {/* Hero Section */}
-      <section className="px-4 mb-12">
-        <div className="max-w-7xl mx-auto bg-gradient-to-br from-emerald-600 to-teal-600 rounded-[32px] overflow-hidden relative shadow-2xl shadow-emerald-200">
-          <div className="absolute top-0 right-0 w-1/2 h-full hidden lg:block overflow-hidden">
-            {/* The "empty green space" phoenix silhouette */}
-            <motion.div
-              initial={{ opacity: 0, x: 100, rotate: 10, scale: 0.8 }}
-              animate={{ opacity: 0.8, x: 0, rotate: 0, scale: 1 }}
-              transition={{ duration: 1.2, delay: 0.3, ease: "easeOut" }}
-              className="absolute right-0 top-1/2 -translate-y-1/2 w-[120%] h-full flex items-center justify-center"
-            >
-              <svg viewBox="0 0 24 24" className="w-[80%] h-[80%] text-gray-900 fill-current drop-shadow-[0_20px_50px_rgba(0,0,0,0.3)]" xmlns="http://www.w3.org/2000/svg">
-                {/* Custom sharp phoenix silhouette path */}
-                <path d="M12 2C12 2 11 4 10 5C9 6 7 6 6 6C5 6 3 5 2 5C2.5 7 4 8 6 9C7 10 9 10 10 11C10.5 11.5 11 12.5 11 13.5C11 15 10 16 9 17C8 18 7 18 6 18C7 19 8.5 20 10 20C12 20 13.5 19 14.5 17.5C15 16.5 15 15 15 13.5C15 11 16 9 18 8C20 7 22 7 23 7C22 6 20 5 18 5C17 5 15 5 14 6C13 7 12 2 12 2ZM12 8C12.5 8 13 8.5 13 9C13 9.5 12.5 10 12 10C11.5 10 11 9.5 11 9C11 8.5 11.5 8 12 8Z" />
-                {/* Adding more detail for "sharpness" */}
-                <path d="M14.5 17.5L16 22L18 19L20 21L21 16L14.5 17.5Z" />
-                <path d="M2.5 7L1 12L4 10L5 13L7 9L2.5 7Z" />
-              </svg>
-            </motion.div>
-            
-            <div className="absolute -top-20 -right-20 w-80 h-80 bg-white/10 rounded-full blur-3xl"></div>
-            <div className="absolute bottom-20 right-40 w-40 h-40 bg-white/10 rounded-full blur-2xl"></div>
-          </div>
-          
-          <div className="relative z-10 px-8 py-16 lg:px-16 lg:py-24 max-w-2xl text-white">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6 }}
-            >
-              <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/10 backdrop-blur rounded-full text-[10px] font-bold uppercase tracking-widest mb-6 border border-white/10">
-                <Zap size={12} className="text-emerald-300 animate-pulse" /> Spur-of-the-moment Giveaways Live
+    <div className="bg-gray-900/40 backdrop-blur-3xl rounded-[48px] p-6 border border-white/5 relative overflow-hidden group shadow-2xl">
+      <div className="flex items-center justify-between mb-8">
+         <h3 className="text-lg font-black italic text-white flex items-center gap-2">
+           NETWORK FEED <span className="flex h-2 w-2 rounded-full bg-red-500 animate-ping"></span>
+         </h3>
+         <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest">Global Scan</p>
+      </div>
+      
+      <div className="h-64 rounded-3xl overflow-hidden mb-8 border border-white/10 relative">
+        <MapContainer center={[44.0521, -123.0868]} zoom={11} className="w-full h-full z-10" zoomControl={false}>
+          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          {tours.map((tour, idx) => (
+            <Marker key={idx} position={tour.band === 'Tool' ? [44.0521, -123.0868] : tour.band === 'Black Label Society' ? [45.5152, -122.6784] : [50.0755, 14.4378]}>
+              <Popup>
+                <div className="p-2">
+                  <p className="font-bold">{tour.band}</p>
+                  <p className="text-xs">{tour.status}</p>
+                </div>
+              </Popup>
+            </Marker>
+          ))}
+        </MapContainer>
+        <div className="absolute top-4 left-4 z-20 px-3 py-1.5 bg-gray-900/80 backdrop-blur text-[9px] font-black text-white rounded-full border border-white/10 uppercase tracking-widest">
+           Band Live Location
+        </div>
+      </div>
+
+      <div className="space-y-6">
+        {tours.map((tour, i) => (
+          <div key={i} className="flex items-center justify-between group/tour">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center border border-white/10 group-hover/tour:border-emerald-500/50 transition-all">
+                {React.cloneElement(tour.icon as React.ReactElement, { size: 18 })}
               </div>
-              <h1 className="text-4xl lg:text-7xl font-bold tracking-tight mb-6 leading-[1.1]">
-                Phoenix <br /><span className="text-emerald-100 underline decoration-2 decoration-emerald-200 underline-offset-8">Precision.</span> Express delivery.
+              <div>
+                <p className="text-sm font-black text-white italic">{tour.band}</p>
+                <p className="text-[8px] font-black text-gray-500 uppercase tracking-widest">{tour.location}</p>
+              </div>
+            </div>
+            <div className="text-right">
+              <p className="text-[8px] font-black text-emerald-400 uppercase tracking-widest mb-0.5">{tour.status}</p>
+              <p className={`text-sm font-black tracking-tighter ${tour.eta === 'LIVE' || tour.eta === 'READY' ? 'text-white italic' : 'text-gray-500'}`}>{tour.eta}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-8 p-4 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
+        <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest text-center">
+          Eugene Hub fully operational
+        </p>
+      </div>
+    </div>
+  );
+};
+
+const Home = ({ user }: { user: any }) => {
+  return (
+    <div className="pt-20 pb-12 bg-gray-950 min-h-screen">
+      {/* Obsidian Hero Section */}
+      <section className="px-4 mb-24 pt-12 relative overflow-hidden">
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[600px] bg-emerald-500/10 blur-[120px] pointer-events-none"></div>
+        
+        <div className="max-w-7xl mx-auto rounded-[64px] overflow-hidden relative shadow-2xl shadow-black/50 min-h-[650px] flex items-center group border border-white/5">
+          {/* Layered Background with Parallax Intent */}
+          <div className="absolute inset-0">
+            <img 
+              src="https://images.unsplash.com/photo-1579412690850-bd41cd0af397?auto=format&fit=crop&q=80&w=2000" 
+              alt="Logistics Tech" 
+              className="w-full h-full object-cover opacity-60 transition-transform duration-[3s] group-hover:scale-105"
+              referrerPolicy="no-referrer"
+            />
+            <div className="absolute inset-0 bg-gradient-to-r from-gray-950 via-gray-950/80 to-transparent"></div>
+            <div className="absolute inset-0 bg-gradient-to-t from-gray-950 via-transparent to-transparent"></div>
+          </div>
+
+          <div className="relative z-10 px-8 py-20 lg:px-20 lg:py-32 max-w-3xl">
+            <motion.div
+              initial={{ opacity: 0, x: -30 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.8, ease: "easeOut" }}
+            >
+              <div className="flex flex-wrap items-center gap-4 mb-10">
+                <div className="inline-flex items-center gap-3 px-5 py-2 bg-emerald-500/20 backdrop-blur-2xl text-emerald-400 rounded-full text-[10px] font-black uppercase tracking-[0.3em] border border-emerald-500/30">
+                  <Zap size={14} className="fill-current animate-pulse" /> Active Network
+                </div>
+                <div className="text-[10px] font-black text-gray-500 uppercase tracking-[0.3em] pl-6 border-l border-white/10">
+                  Eugene • Springfield • Roseburg
+                </div>
+              </div>
+              
+              <h1 className="text-5xl lg:text-9xl font-black tracking-tighter mb-8 leading-[0.85] text-white italic">
+                SUPERIOR <br />
+                <span className="text-emerald-500 drop-shadow-[0_0_40px_rgba(16,185,129,0.3)]">INTELLIGENCE.</span>
               </h1>
-              <p className="text-lg text-emerald-50/90 mb-10 leading-relaxed max-w-lg">
-                The most reliable logistics network in the Santa Clara & Eugene region. From local meals to professional aggregate hauling.
+              
+              <p className="text-gray-400 text-lg lg:text-2xl font-medium max-w-xl mb-12 leading-relaxed tracking-tight">
+                Military-grade logistics for your daily essentials. 
+                Everything from Local Artisan foods to Industrial Hauling—all in one command interface.
               </p>
               
-              <div className="flex flex-col sm:flex-row gap-4">
-                <div className="relative flex-1 group">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+              <div className="flex flex-col sm:flex-row gap-6 p-2 bg-white/5 backdrop-blur-xl rounded-[32px] border border-white/10 max-w-xl">
+                <div className="relative flex-1">
+                  <Search className="absolute left-6 top-1/2 -translate-y-1/2 text-emerald-500" size={20} />
                   <input 
                     type="text" 
-                    placeholder="Search logistics or restaurants..." 
-                    className="w-full h-14 pl-12 pr-6 bg-white rounded-2xl text-gray-900 shadow-lg outline-none focus:ring-2 focus:ring-emerald-300 transition-all"
+                    placeholder="Registry Search..." 
+                    className="w-full h-16 pl-14 pr-6 bg-transparent text-white font-bold placeholder:text-gray-600 outline-none"
                   />
                 </div>
-                <button className="h-14 px-8 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 transition-all shadow-lg active:scale-95">
-                  Order Now
-                </button>
+                <Link to="/merchants" className="h-16 px-12 bg-white text-gray-950 rounded-[24px] font-black text-[12px] uppercase tracking-widest hover:bg-emerald-400 hover:text-white transition-all shadow-xl active:scale-95 flex items-center justify-center">
+                  Launch Dispatch
+                </Link>
               </div>
             </motion.div>
           </div>
-        </div>
-      </section>
-
-      {/* Concerts & Events Section */}
-      <section className="px-4 max-w-7xl mx-auto mb-20">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-             <h2 className="text-3xl font-bold tracking-tight flex items-center gap-2 mb-2">
-               Tour Tracker & Local Events <Ticket className="text-emerald-600" size={32} />
-             </h2>
-             <p className="text-gray-500">Live logistics for Eugene's heavy hitters</p>
-          </div>
-          <div className="hidden sm:flex gap-2">
-             <div className="px-4 py-2 bg-emerald-50 text-emerald-600 rounded-full text-xs font-bold border border-emerald-100">Metal Night</div>
-             <div className="px-4 py-2 bg-emerald-50 text-emerald-600 rounded-full text-xs font-bold border border-emerald-100">Live Logistics</div>
-          </div>
-        </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-8">
-          <motion.div 
-            whileHover={{ y: -8 }}
-            className="p-8 bg-gray-900 text-white rounded-[40px] relative overflow-hidden group border border-gray-800"
-          >
-            <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-600/20 rounded-full -mr-16 -mt-16 transition-transform group-hover:scale-150"></div>
-            <div className="relative z-10 flex flex-col h-full">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400 mb-4 block">August 20th • World Tour</span>
-              <h3 className="text-2xl font-bold mb-2">Metallica: M72</h3>
-              <p className="text-gray-400 text-sm mb-8">Eugene/Portland Regional Hub</p>
-              <div className="mt-auto flex items-center justify-between">
-                <a href="https://www.metallica.com/tour/" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm font-bold text-emerald-500 hover:text-emerald-400 transition-colors">
-                  Track Tickets <ExternalLink size={14} />
-                </a>
-                <div className="flex -space-x-2">
-                   {[1,2,3].map(i => (
-                     <div key={i} className="w-8 h-8 rounded-full border-2 border-gray-900 bg-gray-700 flex items-center justify-center text-[8px] font-bold">100k+</div>
-                   ))}
-                </div>
-              </div>
-            </div>
-          </motion.div>
-
-          <motion.div 
-            whileHover={{ y: -8 }}
-            className="p-8 bg-emerald-50 border border-emerald-100 rounded-[40px] relative overflow-hidden group shadow-sm"
-          >
-            <div className="relative z-10 flex flex-col h-full">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 mb-4 block">July 12th • McDonald Theatre</span>
-              <h3 className="text-2xl font-bold mb-2 text-gray-900">Black Label Society</h3>
-              <p className="text-emerald-700/60 text-sm mb-8">Eugene, OR Venue</p>
-              <div className="mt-auto">
-                <a href="https://blacklabelsociety.com/tour/" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 px-6 py-2 bg-emerald-600 text-white rounded-full text-sm font-bold hover:bg-emerald-700 transition-colors">
-                  Track Tour <ExternalLink size={14} />
-                </a>
-              </div>
-            </div>
-            <div className="absolute bottom-0 right-0 w-24 h-24 bg-emerald-200/30 rounded-full -mr-8 -mb-8"></div>
-          </motion.div>
-
-          <div className="p-8 bg-white border-2 border-dashed border-gray-100 rounded-[40px] flex flex-col items-center justify-center text-center">
-             <div className="w-16 h-16 bg-emerald-50 rounded-full flex items-center justify-center mb-4">
-                <ShieldCheck className="text-emerald-600" size={32} />
-             </div>
-            <p className="text-gray-900 text-sm font-bold mb-1">Fan Protection</p>
-            <p className="text-xs text-gray-400 font-medium leading-relaxed">Secure logistics for major tour stops in the Pacific Northwest.</p>
-          </div>
-        </div>
-      </section>
-
-      {/* Sweepstakes Section */}
-      <section className="px-4 max-w-7xl mx-auto mb-20">
-        <div className="relative rounded-[48px] overflow-hidden bg-gray-900 p-8 lg:p-16 text-white border border-white/5">
-          <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-emerald-600/20 to-transparent"></div>
-          <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl"></div>
           
-          <div className="relative z-10 grid lg:grid-cols-2 gap-12 items-center">
-            <div>
-              <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-emerald-600 text-white text-[10px] font-bold uppercase tracking-widest rounded-full mb-6">
-                <Star size={12} className="fill-current" /> Grand Prize Event
+          {/* Decorative Command HUD Element */}
+          <div className="absolute right-12 bottom-12 hidden xl:block">
+            <div className="p-6 bg-gray-900/60 backdrop-blur-3xl rounded-[32px] border border-white/10 w-64 shadow-2xl">
+              <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest mb-4">Node Metrics</p>
+              <div className="space-y-4">
+                {[
+                  { label: 'Latency', value: '42ms', color: 'bg-emerald-500' },
+                  { label: 'Throughput', value: '1.2k/s', color: 'bg-blue-500' },
+                  { label: 'Uptime', value: '99.98%', color: 'bg-emerald-400' }
+                ].map((stat, i) => (
+                  <div key={i}>
+                    <div className="flex justify-between text-[10px] font-bold text-white mb-2">
+                      <span>{stat.label}</span>
+                      <span>{stat.value}</span>
+                    </div>
+                    <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: '80%' }}
+                        transition={{ delay: 1, duration: 2 }}
+                        className={`h-full ${stat.color}`}
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
-              <h2 className="text-4xl lg:text-6xl font-bold mb-6 leading-tight">
-                Win a <span className="text-emerald-400">Mansion</span> in Eugene
-              </h2>
-              <p className="text-lg text-gray-400 mb-8 max-w-md">
-                Every delivery you track or driver sign-up earns you an entry to win a premier estate in the Willamette Valley. Plus, stay alert for our <b>spur-of-the-moment surprise giveaways</b> throughout the season!
-              </p>
-              <form 
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  alert("You've been entered! Good luck.");
-                }}
-                className="flex flex-col sm:flex-row gap-4"
-              >
-                <input 
-                  type="email" 
-                  required
-                  placeholder="Enter your email to enter" 
-                  className="flex-1 h-14 px-6 bg-white/5 border border-white/10 rounded-2xl outline-none focus:border-emerald-500 transition-colors"
-                />
-                <button type="submit" className="h-14 px-10 bg-emerald-500 text-white rounded-2xl font-bold hover:bg-emerald-400 transition-all shadow-lg active:scale-95">
-                  Sign Up & Win
-                </button>
-              </form>
             </div>
-            <div className="relative aspect-video lg:aspect-square">
-              <img 
-                src="https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&q=80&w=1200" 
-                alt="Luxury Mansion" 
-                className="w-full h-full object-cover rounded-[32px] shadow-2xl"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-gray-900/60 to-transparent rounded-[32px]"></div>
-              <div className="absolute bottom-6 left-6 right-6 p-6 bg-white/10 backdrop-blur rounded-2xl border border-white/10">
-                <p className="text-xs font-bold uppercase tracking-widest opacity-60 mb-1">Current Prize Value</p>
-                <p className="text-2xl font-bold">$2,450,000.00</p>
-              </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Live Tour Logistics Overlay */}
+      <section className="px-4 max-w-7xl mx-auto mb-32">
+        <div className="grid lg:grid-cols-3 gap-10 items-start">
+          <div className="lg:col-span-1">
+             <LiveTourTracker />
+          </div>
+          <div className="lg:col-span-2 space-y-8">
+            <div className="flex items-center justify-between">
+              <h3 className="text-3xl font-black italic text-white uppercase tracking-tighter">Event Shells Ready</h3>
+              <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest">3 Verified Hubs</p>
+            </div>
+            
+            <div className="grid sm:grid-cols-2 gap-8">
+              <motion.div 
+                whileHover={{ y: -8 }}
+                className="group p-8 bg-white/5 border border-white/5 rounded-[48px] relative overflow-hidden transition-all hover:border-emerald-500/30 shadow-2xl"
+              >
+                <div className="absolute inset-0 opacity-20 transition-opacity group-hover:opacity-40 grayscale group-hover:grayscale-0 transition-all duration-700">
+                  <img 
+                    src="https://images.unsplash.com/photo-1540039155733-5bb30b53aa14?auto=format&fit=crop&q=80&w=800"
+                    alt="Metallica Hub"
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+                <div className="relative z-10">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-400 mb-4 block">ACTIVE NODE • M72 TOUR</span>
+                  <h3 className="text-3xl font-black italic text-white mb-2 leading-none">METALLICA</h3>
+                  <p className="text-gray-500 text-xs font-bold uppercase tracking-widest mb-10">Eugene/Portland Regional Hub</p>
+                  <a href="https://www.metallica.com/tour/" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-3 px-8 py-3 bg-white text-gray-950 rounded-2xl font-black text-[11px] uppercase tracking-widest hover:bg-emerald-400 hover:text-white transition-all">
+                    GET TICKETS <ChevronRight size={16} />
+                  </a>
+                </div>
+              </motion.div>
+
+              <motion.div 
+                whileHover={{ y: -8 }}
+                className="group p-8 bg-emerald-500 rounded-[48px] relative overflow-hidden transition-all shadow-2xl shadow-emerald-500/20"
+              >
+                <div className="absolute inset-0 opacity-30 mix-blend-overlay">
+                  <img 
+                    src="https://images.unsplash.com/photo-1493225255756-d9584f8606e9?auto=format&fit=crop&q=80&w=800"
+                    alt="BLS Hub"
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+                <div className="relative z-10">
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-950 mb-4 block">LIVE STATUS • MCDONALD THEATRE</span>
+                  <h3 className="text-3xl font-black italic text-gray-950 mb-2 leading-none">B.L.S.</h3>
+                  <p className="text-emerald-950 text-xs font-bold uppercase tracking-widest mb-10 text-opacity-60">Eugene, OR Venue</p>
+                  <a href="https://blacklabelsociety.com/tour/" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-3 px-8 py-3 bg-gray-950 text-white rounded-2xl font-black text-[11px] uppercase tracking-widest hover:bg-black transition-all">
+                    TRACK HUB <ExternalLink size={16} />
+                  </a>
+                </div>
+              </motion.div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="px-4 max-w-7xl mx-auto mb-20">
+        <div className="p-8 bg-white/5 border border-white/5 rounded-[48px] flex flex-col items-center justify-center text-center backdrop-blur-3xl shadow-2xl">
+           <div className="w-16 h-16 bg-emerald-500/20 rounded-full flex items-center justify-center mb-6 border border-emerald-500/30">
+              <ShieldCheck className="text-emerald-400" size={32} />
+           </div>
+          <p className="text-white text-lg font-black italic uppercase tracking-tighter mb-2">Fan Protection Core</p>
+          <p className="text-gray-500 text-xs font-bold uppercase tracking-widest max-w-md mx-auto">Verified logistics authentication for all major regional tour intersections.</p>
+        </div>
+      </section>
+
+      {/* Logistics & Community Mission Section */}
+      <section className="px-4 max-w-7xl mx-auto mb-20 text-center">
+        <div className="bg-emerald-600 rounded-[48px] p-12 lg:p-20 text-white relative overflow-hidden border-4 border-emerald-500 shadow-2xl">
+          <div className="absolute inset-0 opacity-40">
+            <img src="https://artifact.m68.us/api/v1/artifacts/2074e508-30cd-498c-8f1e-f3f8864ad19e" alt="Home Cleanup" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+          </div>
+          <div className="absolute inset-0 bg-gradient-to-t from-emerald-800/60 via-emerald-700/20 to-transparent"></div>
+          
+          <div className="relative z-10 max-w-3xl mx-auto">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 bg-white text-emerald-900 text-[10px] font-bold uppercase tracking-widest rounded-full mb-8 shadow-xl">
+              <Heart size={12} className="fill-current text-rose-500" /> $400,000 Neighborhood Grant
+            </div>
+            <h2 className="text-4xl lg:text-6xl font-bold mb-8 leading-tight">Building a Stronger Eugene Together</h2>
+            <p className="text-xl text-emerald-50 mb-10 leading-relaxed font-medium">
+              We have committed a <b>$400,000 Home Makeover Fund</b> to support our neighbors. Nominate someone for specialized assistance, eldercare support, or heavy-duty cleanup.
+            </p>
+            <p className="text-xs text-emerald-100/60 mb-12 italic uppercase tracking-widest">
+              Eligible: All regional residents. Exclusion: Employees of PMA LLC are not eligible for this giveaway.
+            </p>
+            <div className="flex flex-wrap justify-center gap-6">
+              <Link to="/community" className="px-12 py-5 bg-white text-emerald-900 rounded-3xl font-bold hover:bg-emerald-50 hover:scale-105 hover:shadow-xl hover:shadow-white/20 transition-all shadow-2xl shadow-emerald-950/20 active:scale-95">
+                Explore Community Hub
+              </Link>
+              <Link to="/driver" className="px-12 py-5 bg-white/20 backdrop-blur-xl border border-white/30 text-white rounded-3xl font-bold hover:bg-white hover:text-emerald-900 transition-all active:scale-95">
+                Join our Logistics Force
+              </Link>
             </div>
           </div>
         </div>
@@ -2464,8 +3725,8 @@ const Home = () => {
         <div className="grid lg:grid-cols-2 gap-12 items-center bg-emerald-50 rounded-[48px] p-8 lg:p-16 border border-emerald-100 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-100/50 rounded-full blur-3xl -mr-32 -mt-32"></div>
           <div className="relative z-10">
-             <div className="w-16 h-16 bg-emerald-600 text-white rounded-2xl flex items-center justify-center mb-6 shadow-lg">
-                <UserIcon size={32} />
+             <div className="w-16 h-16 bg-emerald-600 rounded-2xl overflow-hidden mb-6 shadow-lg">
+                <img src="https://artifact.m68.us/api/v1/artifacts/093ebf4a-9775-430c-8d19-4cb5030460a8" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
              </div>
              <h2 className="text-3xl lg:text-4xl font-bold mb-6 tracking-tight text-emerald-900">The Founder's Resolve</h2>
              <p className="text-gray-700 text-lg leading-relaxed mb-6 italic">
@@ -2479,7 +3740,7 @@ const Home = () => {
           <div className="grid grid-cols-2 gap-4">
              <div className="space-y-4">
                 <div className="aspect-square rounded-3xl overflow-hidden shadow-xl">
-                   <img src="https://images.unsplash.com/photo-1541888941259-7a1955d8c430?auto=format&fit=crop&q=80&w=600" alt="Construction" className="w-full h-full object-cover" />
+                   <img src="https://artifact.m68.us/api/v1/artifacts/093ebf4a-9775-430c-8d19-4cb5030460a8" alt="Founder Portrait" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                 </div>
                 <div className="p-6 bg-white rounded-3xl border border-emerald-100 shadow-sm">
                    <p className="text-2xl font-bold text-emerald-600 mb-1">12+</p>
@@ -2488,11 +3749,11 @@ const Home = () => {
              </div>
              <div className="space-y-4 pt-12">
                 <div className="p-6 bg-emerald-600 text-white rounded-3xl shadow-xl shadow-emerald-900/20">
-                   <p className="text-2xl font-bold mb-1">$2.4M</p>
-                   <p className="text-[10px] font-bold text-emerald-100 uppercase tracking-widest">Est. Impact Value</p>
+                   <p className="text-2xl font-bold mb-1">$400k</p>
+                   <p className="text-[10px] font-bold text-emerald-100 uppercase tracking-widest font-mono">Neighborhood Fund</p>
                 </div>
                 <div className="aspect-square rounded-3xl overflow-hidden shadow-xl">
-                   <img src="https://images.unsplash.com/photo-1464931084227-28f7422f281e?auto=format&fit=crop&q=80&w=600" alt="Helping hand" className="w-full h-full object-cover" />
+                   <img src="https://artifact.m68.us/api/v1/artifacts/6504a796-788c-4467-bc85-6bb9a4448554" alt="Community Support" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                 </div>
              </div>
           </div>
@@ -2505,9 +3766,9 @@ const Home = () => {
           <h2 className="text-2xl font-bold tracking-tight text-gray-900 flex items-center gap-2">
             Regional Logistics & Food <Bird size={24} className="text-emerald-600 fill-current" />
           </h2>
-          <button className="text-sm font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 group">
+          <Link to="/search" className="text-sm font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 group">
             View All <ChevronRight size={16} className="group-hover:translate-x-0.5 transition-transform" />
-          </button>
+          </Link>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -2542,6 +3803,42 @@ export default function App() {
   const [user, setUser] = useState<any>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isCartOpen, setIsCartOpen] = useState(false);
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [hasInteracted, setHasInteracted] = useState(false);
+
+  const addToCart = (item: MenuItem, merchantId: string) => {
+    setCart(prev => {
+      const existing = prev.find(i => i.id === item.id);
+      if (existing) {
+        return prev.map(i => i.id === item.id ? { ...i, quantity: i.quantity + 1 } : i);
+      }
+      return [...prev, { ...item, quantity: 1, merchantId }];
+    });
+    setIsCartOpen(true);
+  };
+
+  const removeFromCart = (itemId: string) => {
+    setCart(prev => prev.filter(i => i.id !== itemId));
+  };
+
+  const updateQuantity = (itemId: string, delta: number) => {
+    setCart(prev => prev.map(i => {
+      if (i.id === itemId) {
+        const newQty = Math.max(1, i.quantity + delta);
+        return { ...i, quantity: newQty };
+      }
+      return i;
+    }));
+  };
+
+  useEffect(() => {
+    const handleInteraction = () => {
+      setHasInteracted(true);
+      window.removeEventListener('click', handleInteraction);
+    };
+    window.addEventListener('click', handleInteraction);
+    return () => window.removeEventListener('click', handleInteraction);
+  }, []);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -2576,18 +3873,21 @@ export default function App() {
   return (
     <Router>
       <div className="min-h-screen bg-white font-sans text-gray-900 selection:bg-emerald-100 selection:text-emerald-900">
-        <Navbar user={user} profile={profile} toggleCart={() => setIsCartOpen(!isCartOpen)} />
+        <Navbar user={user} profile={profile} cart={cart} toggleCart={() => setIsCartOpen(!isCartOpen)} />
+        <PhoenixPulse user={user} />
+        <PhoenixAI />
+        <MusicPlayer startSignal={hasInteracted} user={user} />
         
         <main>
           <Routes>
-            <Route path="/" element={<Home />} />
+            <Route path="/" element={<Home user={user} />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/driver" element={<DriverLanding user={user} />} />
             <Route path="/driver/dashboard" element={<DriverDashboard user={user} />} />
             <Route path="/community" element={<CommunityImpactHub user={user} />} />
             <Route path="/track/:id" element={<OrderTracking user={user} />} />
             <Route path="/profile" element={<Profile user={user} />} />
-            <Route path="/merchant/:id" element={<MerchantPage user={user} />} />
+            <Route path="/merchant/:id" element={<MerchantPage user={user} addToCart={addToCart} />} />
           </Routes>
         </main>
 
@@ -2609,15 +3909,15 @@ export default function App() {
               <div>
                 <h4 className="font-bold mb-6 text-sm uppercase tracking-widest text-gray-400">Services</h4>
                 <ul className="space-y-4 text-sm text-gray-600 font-medium">
-                  <li><Link to="/" className="hover:text-emerald-600 transition-colors">Food & Dining</Link></li>
-                  <li><Link to="/search" className="hover:text-emerald-600 transition-colors">Asset Search</Link></li>
-                  <li><Link to="/about" className="hover:text-emerald-600 transition-colors">Hauling & Logistics</Link></li>
+                  <li><Link to="/search" className="hover:text-emerald-600 transition-colors">Marketplace</Link></li>
+                  <li><Link to="/search" className="hover:text-emerald-600 transition-colors">Logistics</Link></li>
+                  <li><Link to="/community" className="hover:text-emerald-600 transition-colors">Community Hub</Link></li>
                 </ul>
               </div>
               <div>
                 <h4 className="font-bold mb-6 text-sm uppercase tracking-widest text-gray-400">Work with Us</h4>
                 <ul className="space-y-4 text-sm text-gray-600 font-medium">
-                  <li><Link to="/partner" className="hover:text-emerald-600 transition-colors">Business Partners</Link></li>
+                  <li><Link to="/community" className="hover:text-emerald-600 transition-colors">Business Partners</Link></li>
                   <li><Link to="/driver" className="hover:text-emerald-600 transition-colors">Become a Driver</Link></li>
                 </ul>
               </div>
@@ -2651,33 +3951,147 @@ export default function App() {
                 className="relative w-full max-w-md bg-white h-full shadow-2xl flex flex-col"
               >
                 <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-                  <h2 className="text-xl font-bold tracking-tight">Your Order</h2>
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center text-white shadow-lg">
+                      <ShoppingCart size={20} />
+                    </div>
+                    <div>
+                      <h2 className="text-lg font-black italic uppercase tracking-tighter">Your Manifest</h2>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-none">Eugene Sector Hub</p>
+                    </div>
+                  </div>
                   <button onClick={() => setIsCartOpen(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
                     <X size={20} />
                   </button>
                 </div>
-                <div className="flex-1 overflow-y-auto p-6 flex flex-col items-center justify-center text-center">
-                  <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4">
-                    <Package size={32} className="text-gray-300" />
-                  </div>
-                  <h3 className="text-lg font-bold mb-2">Cart is empty</h3>
-                  <p className="text-gray-500 text-sm mb-6">Looks like you haven't added anything yet.</p>
-                  <button 
-                    onClick={() => setIsCartOpen(false)}
-                    className="px-8 py-3 bg-emerald-500 text-white rounded-xl font-bold shadow-lg shadow-emerald-100 active:scale-95"
-                  >
-                    Start Shopping
-                  </button>
+
+                <div className="flex-1 overflow-y-auto p-6">
+                  {cart.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-center">
+                      <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4">
+                        <Package size={32} className="text-gray-300" />
+                      </div>
+                      <h3 className="text-lg font-bold mb-2">Cart is empty</h3>
+                      <p className="text-gray-500 text-sm mb-6">Looks like you haven't added anything yet.</p>
+                      <button 
+                        onClick={() => setIsCartOpen(false)}
+                        className="px-8 py-3 bg-emerald-500 text-white rounded-xl font-bold shadow-lg shadow-emerald-100 active:scale-95"
+                      >
+                        Start Shopping
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {cart.map((item) => (
+                        <div key={item.id} className="flex gap-4 group">
+                          <div className="w-16 h-16 rounded-xl overflow-hidden flex-shrink-0 bg-gray-100">
+                            <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-bold text-gray-900 truncate text-sm mb-1">{item.name}</h4>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3 bg-gray-50 rounded-lg p-1 px-2 border border-gray-100">
+                                <button onClick={() => updateQuantity(item.id, -1)} className="text-gray-400 hover:text-emerald-500">
+                                  <List size={14} />
+                                </button>
+                                <span className="text-xs font-bold w-4 text-center">{item.quantity}</span>
+                                <button onClick={() => updateQuantity(item.id, 1)} className="text-gray-400 hover:text-emerald-500">
+                                  <Zap size={14} />
+                                </button>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-sm font-black text-gray-900">${(item.price * item.quantity).toFixed(2)}</p>
+                                <button 
+                                  onClick={() => removeFromCart(item.id)}
+                                  className="text-[9px] font-bold text-red-400 uppercase tracking-widest hover:text-red-500"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div className="p-6 border-t border-gray-100 bg-gray-50">
-                  <div className="flex justify-between mb-4">
-                    <span className="text-sm font-medium text-gray-500">Total</span>
-                    <span className="text-lg font-bold">$0.00</span>
+
+                {cart.length > 0 && (
+                  <div className="p-6 border-t border-gray-100 bg-gray-50/50 space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-500">Subtotal</span>
+                        <span className="font-bold text-gray-900">
+                          ${cart.reduce((acc, i) => acc + (i.price * i.quantity), 0).toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm items-center">
+                        <span className="text-gray-500 flex items-center gap-2">
+                          Delivery Logistics
+                          <div className="px-2 py-0.5 bg-emerald-50 text-[10px] font-bold text-emerald-600 rounded-full border border-emerald-100">
+                            {(cart.length > 0 ? getDistance(44.0521, -123.0868, demoMerchants.find(m => m.id === cart[0].merchantId)?.coords?.lat || 44.0521, demoMerchants.find(m => m.id === cart[0].merchantId)?.coords?.lng || -123.0868).toFixed(1) : 0)} km
+                          </div>
+                        </span>
+                        <span className="font-bold text-emerald-600">
+                          ${calculateDeliveryFee(cart.length > 0 ? getDistance(44.0521, -123.0868, demoMerchants.find(m => m.id === cart[0].merchantId)?.coords?.lat || 44.0521, demoMerchants.find(m => m.id === cart[0].merchantId)?.coords?.lng || -123.0868) : 0).toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-500">Phoenix Service Fee</span>
+                        <span className="font-bold text-gray-900">
+                          ${(cart.reduce((acc, i) => acc + (i.price * i.quantity), 0) * 0.05).toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="pt-4 border-t border-gray-100 flex justify-between items-center mb-6">
+                      <div>
+                        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">TOTAL AUTHORIZATION</p>
+                        <p className="text-2xl font-black italic text-gray-950 tracking-tighter">
+                          ${(
+                            cart.reduce((acc, i) => acc + (i.price * i.quantity), 0) + 
+                            calculateDeliveryFee(getDistance(44.0521, -123.0868, demoMerchants.find(m => m.id === cart[0].merchantId)?.coords?.lat || 44.0521, demoMerchants.find(m => m.id === cart[0].merchantId)?.coords?.lng || -123.0868)) +
+                            (cart.reduce((acc, i) => acc + (i.price * i.quantity), 0) * 0.05)
+                          ).toFixed(2)}
+                        </p>
+                      </div>
+                      <div className="bg-emerald-500/10 p-2 rounded-xl">
+                        <Zap className="text-emerald-500 animate-pulse" size={24} />
+                      </div>
+                    </div>
+                    <button 
+                      onClick={async () => {
+                        if (!user) {
+                          signInWithPopup(auth, new GoogleAuthProvider());
+                          return;
+                        }
+                        const firstMerchantId = cart[0].merchantId;
+                        const firstMerchant = demoMerchants.find(m => m.id === firstMerchantId);
+                        const orderData: Order = {
+                          id: `ORD-${Math.floor(1000 + Math.random() * 9000)}`,
+                          status: 'pending',
+                          merchantId: firstMerchantId,
+                          customerId: user.uid,
+                          total: cart.reduce((acc, i) => acc + (i.price * i.quantity), 0) + 
+                                calculateDeliveryFee(getDistance(44.0521, -123.0868, firstMerchant?.coords?.lat || 44.0521, firstMerchant?.coords?.lng || -123.0868)) +
+                                (cart.reduce((acc, i) => acc + (i.price * i.quantity), 0) * 0.05),
+                          items: cart,
+                          currentLocation: firstMerchant?.coords
+                        };
+                        try {
+                          await setDoc(doc(db, 'orders', orderData.id), orderData);
+                          setCart([]);
+                          setIsCartOpen(false);
+                          window.location.href = `/track/${orderData.id}`;
+                        } catch (e) {
+                          console.error(e);
+                        }
+                      }}
+                      className="w-full py-5 bg-gray-950 text-white rounded-3xl font-black text-xs uppercase tracking-[0.2em] hover:bg-emerald-500 transition-all shadow-2xl active:scale-95"
+                    >
+                      Initialize High-Speed Delivery
+                    </button>
                   </div>
-                  <button disabled className="w-full py-4 bg-gray-200 text-gray-400 rounded-2xl font-bold cursor-not-allowed">
-                    Checkout
-                  </button>
-                </div>
+                )}
               </motion.div>
             </div>
           )}
